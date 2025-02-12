@@ -11,28 +11,35 @@ from langchain.prompts import PromptTemplate
 import matplotlib.pyplot as plt
 import seaborn as sns
 from dotenv import load_dotenv
+import pandas as pd
+from datetime import datetime
+import tempfile
 
-# ✅ Configure Streamlit page
+# Configure Streamlit page
 st.set_page_config(page_title="Intel360 – AI-Driven Competitor Analysis", layout="wide")
 
-# ✅ Load API Key
+# Load API Key
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# ✅ Sidebar: Admin Dashboard UI
-with st.sidebar:
-    st.markdown("## ⚙️ Admin Dashboard")
-    st.markdown("---")
-    st.markdown("### Menu")
-    st.button("📂 Add Data")
-    st.button("📊 Dashboard")
-    st.button("📁 Files")
-    st.button("📈 Analytics")
-    st.button("⚙️ Settings")
-    st.button("🚪 Logout")
-    st.markdown("---")
+# Initialize session states
+if 'uploaded_files' not in st.session_state:
+    st.session_state.uploaded_files = []
+if 'processed_files' not in st.session_state:
+    st.session_state.processed_files = set()
+if 'temp_dir' not in st.session_state:
+    st.session_state.temp_dir = tempfile.mkdtemp()
+if 'settings' not in st.session_state:
+    st.session_state.settings = {
+        'theme': 'Light',
+        'language': 'English',
+        'notification': True,
+        'auto_analysis': False
+    }
+if 'last_analysis' not in st.session_state:
+    st.session_state.last_analysis = None
 
-# ✅ Extract text from PDFs
+# Existing helper functions (keep them as is)
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
@@ -41,18 +48,23 @@ def get_pdf_text(pdf_docs):
             text += page.extract_text()
     return text
 
-# ✅ Split text into chunks
 def get_text_chunks(text):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
     return text_splitter.split_text(text)
 
-# ✅ Convert text into a searchable vector store
 def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
 
-# ✅ Load AI analysis model
+def analyze_competitor_strategies():
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+    docs = new_db.similarity_search("Analyze competitor strategies")
+    chain = get_analysis_chain()
+    response = chain({"input_documents": docs}, return_only_outputs=True)
+    return response["output_text"]
+
 def get_analysis_chain():
     prompt_template = """
     Analyze the provided competitor strategy context and extract key insights, summarize findings, and identify emerging trends. 
@@ -75,84 +87,154 @@ def get_analysis_chain():
     prompt = PromptTemplate(template=prompt_template, input_variables=["context"])
     return load_qa_chain(model, chain_type="stuff", prompt=prompt)
 
-# ✅ Run competitor analysis
-def analyze_competitor_strategies():
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-    docs = new_db.similarity_search("Analyze competitor strategies")
-    chain = get_analysis_chain()
-    response = chain({"input_documents": docs}, return_only_outputs=True)
-    return response["output_text"]
-
-# ✅ Extract insights for visualization dynamically
-def extract_insights_for_visualization():
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-    docs = new_db.similarity_search("Extract competitor insights for visualization")
-    chain = get_analysis_chain()
-    response = chain({"input_documents": docs}, return_only_outputs=True)
+# Enhanced Settings
+def show_settings():
+    st.title("Settings ⚙️")
     
-    # ✅ Process extracted insights into structured data
-    extracted_text = response["output_text"]
+    # General Settings
+    st.subheader("General Settings")
+    st.session_state.settings['theme'] = st.selectbox(
+        "Theme",
+        options=['Light', 'Dark'],
+        index=0 if st.session_state.settings['theme'] == 'Light' else 1
+    )
+    st.session_state.settings['language'] = st.selectbox(
+        "Language",
+        options=['English', 'Spanish', 'French'],
+        index=0
+    )
     
-    categories = {
-        "Market Positioning": 0,
-        "Strengths": 0,
-        "Weaknesses": 0,
-        "Opportunities": 0,
-        "Trends": 0
-    }
+    # Notification Settings
+    st.subheader("Notifications")
+    st.session_state.settings['notification'] = st.toggle(
+        "Enable Notifications",
+        value=st.session_state.settings['notification']
+    )
+    st.session_state.settings['auto_analysis'] = st.toggle(
+        "Auto-analyze new documents",
+        value=st.session_state.settings['auto_analysis']
+    )
     
-    # ✅ Example: Extract numerical values dynamically
-    for category in categories.keys():
-        if category.lower() in extracted_text.lower():
-            categories[category] += 20  # Placeholder logic for now
+    if st.button("Save Settings"):
+        st.success("Settings saved successfully!")
+
+# Enhanced Analytics
+def show_analytics():
+    st.title("Advanced Analytics 📈")
     
-    return categories
+    tabs = st.tabs(["Competitor Analysis", "Market Trends", "SWOT Analysis"])
+    
+    with tabs[0]:
+        st.subheader("Competitor Strategy Analysis")
+        if st.button("Generate Analysis"):
+            if len(st.session_state.uploaded_files) > 0:
+                with st.spinner("Analyzing competitor strategies..."):
+                    try:
+                        report = analyze_competitor_strategies()
+                        st.text_area("Analysis Report:", value=report, height=300)
+                        st.session_state.last_analysis = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    except Exception as e:
+                        st.error(f"Error generating analysis: {str(e)}")
+            else:
+                st.warning("Please upload documents first to perform analysis.")
+    
+    with tabs[1]:
+        st.subheader("Market Trends")
+        # Sample data for demonstration
+        trend_data = pd.DataFrame({
+            'Month': ['Jan', 'Feb', 'Mar', 'Apr'],
+            'Market Share': [30, 35, 32, 38],
+            'Growth Rate': [0, 16.7, -8.6, 18.8]
+        })
+        
+        # Market share trend
+        st.line_chart(trend_data.set_index('Month')['Market Share'])
+        
+        # Growth rate analysis
+        st.subheader("Monthly Growth Rate")
+        st.bar_chart(trend_data.set_index('Month')['Growth Rate'])
+    
+    with tabs[2]:
+        st.subheader("SWOT Analysis")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### Strengths")
+            st.write("• Market Leadership")
+            st.write("• Strong R&D")
+            st.write("• Brand Recognition")
+            
+            st.markdown("### Opportunities")
+            st.write("• Emerging Markets")
+            st.write("• Digital Transformation")
+            st.write("• Strategic Partnerships")
+        
+        with col2:
+            st.markdown("### Weaknesses")
+            st.write("• Cost Structure")
+            st.write("• Legacy Systems")
+            st.write("• Regional Limitations")
+            
+            st.markdown("### Threats")
+            st.write("• New Competitors")
+            st.write("• Regulatory Changes")
+            st.write("• Market Volatility")
 
-# ✅ Generate dynamic visualizations based on AI insights
-def visualize_analysis():
-    st.subheader("Competitor Insights Visualization")
-    insights = extract_insights_for_visualization()
-
-    categories = list(insights.keys())
-    values = list(insights.values())
-
-    plt.figure(figsize=(8, 5))
-    sns.barplot(x=categories, y=values, palette="coolwarm")
-    plt.xlabel("Categories")
-    plt.ylabel("Percentage of Focus")
-    plt.title("Competitor Strategy Breakdown")
-    st.pyplot(plt)
-
-# ✅ Streamlit UI
 def main():
-    st.title("Intel360: AI-Driven Competitor Analysis 📊")
-
-    # Upload PDFs
-    st.subheader("Upload Competitor Reports")
-    pdf_docs = st.file_uploader("Select PDF Files", accept_multiple_files=True)
+    # Sidebar
+    with st.sidebar:
+        st.markdown("## ⚙️ Admin Dashboard")
+        st.markdown("---")
+        add_data_button = st.button("📂 Add Data")
+        dashboard_button = st.button("📊 Dashboard")
+        files_button = st.button("📁 Files")
+        analytics_button = st.button("📈 Analytics")
+        settings_button = st.button("⚙️ Settings")
     
-    if st.button("Submit & Process"):
-        with st.spinner("Extracting and processing text..."):
-            raw_text = get_pdf_text(pdf_docs)
-            text_chunks = get_text_chunks(raw_text)
-            get_vector_store(text_chunks)
-            st.success("Documents processed successfully!")
-
-    # Analysis & Visualization
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("Run Competitor Analysis"):
-            st.subheader("Competitor Strategy Analysis Report")
-            with st.spinner("Analyzing competitor strategies..."):
-                report = analyze_competitor_strategies()
-                st.text_area("Analysis Report:", value=report, height=300)
-
-    with col2:
-        if st.button("Visualize Analysis"):
-            visualize_analysis()
+    # Main content
+    if add_data_button:
+        st.title("Upload Competitor Reports 📄")
+        pdf_docs = st.file_uploader("Select PDF Files", accept_multiple_files=True)
+        
+        if pdf_docs:
+            st.session_state.uploaded_files.extend(pdf_docs)
+        
+        if st.button("Submit & Process"):
+            if pdf_docs:
+                with st.spinner("Processing documents..."):
+                    raw_text = get_pdf_text(pdf_docs)
+                    text_chunks = get_text_chunks(raw_text)
+                    get_vector_store(text_chunks)
+                    st.success("Documents processed successfully!")
+            else:
+                st.warning("Please upload at least one file.")
+    
+    elif dashboard_button:
+        st.title("Dashboard 📊")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Documents Analyzed", len(st.session_state.uploaded_files))
+        with col2:
+            st.metric("Last Analysis", st.session_state.last_analysis or "Never")
+        with col3:
+            st.metric("Active Competitors", len(st.session_state.uploaded_files))
+    
+    elif files_button:
+        st.title("Uploaded Files 📂")
+        if len(st.session_state.uploaded_files) > 0:
+            for file in st.session_state.uploaded_files:
+                col1, col2 = st.columns([3,1])
+                with col1:
+                    st.write(f"📄 {file.name}")
+                with col2:
+                    st.download_button("Download", file, file_name=file.name)
+        else:
+            st.warning("No files uploaded yet.")
+    
+    elif analytics_button:
+        show_analytics()
+    
+    elif settings_button:
+        show_settings()
 
 if __name__ == "__main__":
     main()
