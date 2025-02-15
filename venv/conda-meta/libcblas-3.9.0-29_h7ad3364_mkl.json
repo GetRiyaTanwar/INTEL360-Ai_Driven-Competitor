@@ -1,0 +1,47 @@
+{
+  "build": "29_h7ad3364_mkl",
+  "build_number": 29,
+  "channel": "https://conda.anaconda.org/conda-forge/win-64",
+  "constrains": [
+    "liblapacke 3.9.0 29*_mkl",
+    "liblapack 3.9.0 29*_mkl",
+    "blas 2.129 mkl"
+  ],
+  "depends": [
+    "libblas 3.9.0 29_h576b46c_mkl",
+    "mkl >=2024.2.2,<2025.0a0"
+  ],
+  "extracted_package_dir": "C:\\Users\\Riya\\anaconda3download\\pkgs\\libcblas-3.9.0-29_h7ad3364_mkl",
+  "files": [
+    "Library/bin/libcblas.dll",
+    ".nonadmin"
+  ],
+  "fn": "libcblas-3.9.0-29_h7ad3364_mkl.conda",
+  "license": "BSD-3-Clause",
+  "link": {
+    "source": "C:\\Users\\Riya\\anaconda3download\\pkgs\\libcblas-3.9.0-29_h7ad3364_mkl",
+    "type": 1
+  },
+  "md5": "3d674200e7a1ee1561894501f81f821f",
+  "name": "libcblas",
+  "package_tarball_full_path": "C:\\Users\\Riya\\anaconda3download\\pkgs\\libcblas-3.9.0-29_h7ad3364_mkl.conda",
+  "paths_data": {
+    "paths": [
+      {
+        "_path": "Library/bin/libcblas.dll",
+        "path_type": "hardlink",
+        "sha256": "75f2faf9ba5a658ebe068e9568d1275514f878b7a760d285b16f1e1505eea67c",
+        "sha256_in_prefix": "75f2faf9ba5a658ebe068e9568d1275514f878b7a760d285b16f1e1505eea67c",
+        "size_in_bytes": 26840968
+      }
+    ],
+    "paths_version": 1
+  },
+  "requested_spec": "None",
+  "sha256": "983caad08c23475de33810d924a6818354dea2ece2c1a65ccc32e94ed5d29d14",
+  "size": 3735136,
+  "subdir": "win-64",
+  "timestamp": 1739426312000,
+  "url": "https://conda.anaconda.org/conda-forge/win-64/libcblas-3.9.0-29_h7ad3364_mkl.conda",
+  "version": "3.9.0"
+}

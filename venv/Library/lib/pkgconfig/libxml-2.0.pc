@@ -1,0 +1,11 @@
+prefix=c:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library 
+exec_prefix=c:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library 
+libdir=c:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library/lib 
+includedir=c:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library/include 
+modules=0 
+Name: libXML 
+Version: 2.13.5 
+Description: libXML library version2. 
+Requires: 
+Libs: -Lc:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library/lib -lxml2 -liconv -lz 
+Cflags: -Ic:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library/include/libxml2 -Ic:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library/include 

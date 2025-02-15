@@ -1,0 +1,10 @@
+prefix=c:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libjpeg
+Description: Reads and writes JPEG files
+Version: ..0
+Libs: -L${libdir} -ljpeg
+Cflags: -I${includedir}
