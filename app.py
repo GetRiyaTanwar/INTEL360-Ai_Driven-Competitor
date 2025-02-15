@@ -15,6 +15,7 @@ import spacy
 import base64
 
 
+
 # Set page config - move this to the top as the first Streamlit command
 st.set_page_config(page_title="INSIGHT IQ", layout="wide")
 
@@ -150,12 +151,44 @@ with st.sidebar:
 
 if st.session_state.page == "Upload Files":
     st.title("Upload Competitor Reports")
-    pdf_docs = st.file_uploader("Select PDFs", accept_multiple_files=True, type=["pdf"], key="uploader")
+    
+    # Step 1: Select Document Domain
+    st.write("### Step 1: Select the Document Domain")
+    domain_mapping = {
+        "Healthcare": "Market growth, regulatory impact, emerging technologies.",
+        "Life Insurance": "Risk management, policy innovations, customer engagement strategies.",
+        "Mutual Funds": "Investment patterns, fund performance, economic impact.",
+        "Lending or Diversified NBFCs": "Lending strategies, credit risk, financial stability."
+    }
 
-    if st.button("Submit & Process") and pdf_docs:
-        st.session_state.uploaded_files = pdf_docs  
-        for pdf_file in pdf_docs:
+    selected_domain = st.selectbox("Select Document Domain", ["Select a domain"] + list(domain_mapping.keys()))
+
+    # Step 2: Upload PDF (Disabled if no domain is selected)
+    st.write("### Step 2: Upload PDF Reports")
+    if selected_domain == "Select a domain":
+        st.warning("Please select a domain before uploading PDFs.")
+        file_uploader_disabled = True
+    else:
+        st.success(f"You selected **{selected_domain}**. Expected PDF content: {domain_mapping[selected_domain]}")
+        file_uploader_disabled = False
+
+    uploaded_files = st.file_uploader(
+        "Select PDFs", 
+        type=["pdf"], 
+        accept_multiple_files=True,
+        disabled=file_uploader_disabled
+    )
+
+    if uploaded_files:
+        st.success(f"{len(uploaded_files)} file(s) uploaded successfully for {selected_domain} analysis.")
+        st.session_state["selected_domain"] = selected_domain  # Store domain in session state
+
+    if st.button("Submit & Process") and uploaded_files:
+        st.write("Processing files...")
+        st.session_state.uploaded_files = uploaded_files
+        for pdf_file in uploaded_files:
             process_file(pdf_file)
+
 
 elif st.session_state.page == "Dashboard":
     st.title("Dashboard 📊")
@@ -180,43 +213,69 @@ elif st.session_state.page == "Dashboard":
 elif st.session_state.page == "Analysis":
     st.title("Run AI-Driven Analysis")
 
-    if not st.session_state.uploaded_files:
-        st.warning("No files uploaded! Please upload documents first.")
+    if not st.session_state.get("uploaded_files"):
+        st.warning("No files uploaded! Please upload relevant financial and market analysis documents.")
     else:
-        analysis_types = ["Competitor Strategy", "Market Trends", "SWOT Analysis", "Comparative Analysis"]
+        analysis_types = [
+            "Competitor Strategy",
+            "Market Trends",
+            "SWOT Analysis",
+            "Comparative Analysis"
+        ]
         analysis_type = st.selectbox("Select Analysis Type", analysis_types)
+
+        # Get the stored domain
+        selected_domain = st.session_state.get("selected_domain", "Unknown Domain")
+
+        # Domain-Specific Context
+        domain_mapping = {
+            "Healthcare": "Market growth, regulatory impact, emerging technologies, and patient care models.",
+            "Life Insurance": "Risk management, policy innovations, customer engagement strategies, and claim settlement processes.",
+            "Mutual Funds": "Investment patterns, fund performance, risk management strategies, and economic impact.",
+            "Lending or Diversified NBFCs": "Lending strategies, credit risk, interest rate structures, and financial stability."
+        }
+
+        prompt_templates = {
+            "Competitor Strategy": "Analyze competitor strategies within the {selected_domain} sector. Extract insights on business models, revenue streams, expansion plans, pricing strategies, competitive advantages, innovation adoption, partnerships, and customer acquisition strategies. Provide findings in bullet points with each point on a new line.",
+            "Market Trends": "Extract key market trends affecting the {selected_domain} industry. Identify growth trends, demand-supply shifts, regulatory impacts, consumer behavior changes, adoption of new technologies, macroeconomic influences, and emerging competitors. Present insights in bullet points with each point on a new line.",
+            "SWOT Analysis": "Perform a SWOT analysis for the {selected_domain} sector. Identify strengths (market leadership, financial stability, customer loyalty), weaknesses (high costs, regulatory challenges, operational inefficiencies), opportunities (new market expansions, technological adoption, industry growth), and threats (economic downturn, policy changes, increasing competition). Structure insights with separate bullet points under each category.",
+            "Comparative Analysis": "Compare competitors within the {selected_domain} industry based on financial growth, business strategy, market positioning, and innovation. Compare market share, business model differences, competitive advantages, customer engagement strategies, investment in technology, and expansion strategies. Structure insights in bullet points with separate sections for each competitor."
+        }
+
+        if selected_domain not in domain_mapping:
+            st.error("Domain selection is missing. Please upload files again with a domain.")
+        else:
+            st.success(f"Using selected domain: **{selected_domain}**")
 
         if st.button("Run Analysis"):
             for pdf_file in st.session_state.uploaded_files:
                 file_name = os.path.splitext(pdf_file.name)[0]
                 folder_path = f"faiss_indexes/{file_name}"
-                
+
                 if not os.path.exists(folder_path):
                     st.error(f"FAISS index for {file_name} not found. Process the document first.")
                     continue
 
                 st.subheader(f"Analyzing: {pdf_file.name}")
-                query = {
-                    "Competitor Strategy": "Analyze competitor strategies",
-                    "Market Trends": "Analyze market trends",
-                    "SWOT Analysis": "Perform SWOT Analysis",
-                    "Comparative Analysis": "Compare competitors' strengths, weaknesses, and market positioning"
-                }.get(analysis_type, "Analyze document")
+                query = prompt_templates[analysis_type].format(selected_domain=selected_domain)
 
                 with st.spinner("Analyzing..."):
                     try:
+                        # Call the analyze_document function already defined in app.py
                         report = analyze_document(file_name, query, f"Context: {{context}}")
-                        st.text_area(f"Analysis Report for {pdf_file.name}", value=report, height=200)
+                        st.text_area(f"Analysis Report for {pdf_file.name}", value=report, height=300)
 
                         # Store analysis result in session state
-                        st.session_state.analysis_history.append({
+                        st.session_state.setdefault("analysis_history", []).append({
                             "query": query,
+                            "domain": selected_domain,
                             "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "result": report
                         })
 
                     except Exception as e:
                         st.error(f"Analysis failed for {pdf_file.name}: {str(e)}")
+
 
 
 elif st.session_state.page == "Files":
