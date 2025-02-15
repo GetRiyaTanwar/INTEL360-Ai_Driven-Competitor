@@ -1,0 +1,10 @@
+prefix=c:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: qhull_r
+Description: Qhull reentrant shared library
+Version: 8.0.2
+Libs: -L${libdir} -lqhull_r
+Cflags: -I${includedir}
+

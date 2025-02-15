@@ -1,0 +1,10 @@
+prefix=c:/Users/Riya/OneDrive/Desktop/dtu hackathon/tanwar dtu hackathon/INTEL360-Ai_Driven-Competitor/venv/Library
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: qhullcpp
+Description: Qhull C++ library
+Version: 8.0.2
+Libs: -L${libdir} -lqhullcpp
+Cflags: -I${includedir}
+

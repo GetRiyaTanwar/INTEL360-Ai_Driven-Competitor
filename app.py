@@ -157,29 +157,27 @@ if st.session_state.page == "Upload Files":
         for pdf_file in pdf_docs:
             process_file(pdf_file)
 
-
 elif st.session_state.page == "Dashboard":
     st.title("Dashboard 📊")
+
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("📄 Documents Analyzed", len(st.session_state.uploaded_files))
-    with col2:
         st.metric("📊 Total Analyses", len(st.session_state.analysis_history))
-    
+
+    # Display Analysis History in Column Form
     st.subheader("📜 Analysis History")
+    
     if st.session_state.analysis_history:
-        col1, col2 = st.columns(2)
-        columns = [col1, col2]
-        for idx, history in enumerate(st.session_state.analysis_history):
-            with columns[idx % 2]:
-                st.write(f"**Query:** {history['query']}")
-                st.write(f"📅 **Date:** {history['timestamp']}")
-                st.text_area("Result", value=history['result'], height=150, disabled=True)
-                st.markdown("---")
+        for analysis in st.session_state.analysis_history:
+            st.markdown(f"**Query:** {analysis['query']}")
+            st.markdown(f"**Timestamp:** {analysis['timestamp']}")
+            st.markdown(f"**Result:** {analysis['result']}")
+            st.markdown("---")
     else:
         st.info("No analysis history available.")
 
-if st.session_state.page == "Analysis":
+
+elif st.session_state.page == "Analysis":
     st.title("Run AI-Driven Analysis")
 
     if not st.session_state.uploaded_files:
@@ -193,7 +191,6 @@ if st.session_state.page == "Analysis":
                 file_name = os.path.splitext(pdf_file.name)[0]
                 folder_path = f"faiss_indexes/{file_name}"
                 
-                # Check if FAISS index exists before running analysis
                 if not os.path.exists(folder_path):
                     st.error(f"FAISS index for {file_name} not found. Process the document first.")
                     continue
@@ -210,9 +207,16 @@ if st.session_state.page == "Analysis":
                     try:
                         report = analyze_document(file_name, query, f"Context: {{context}}")
                         st.text_area(f"Analysis Report for {pdf_file.name}", value=report, height=200)
+
+                        # Store analysis result in session state
+                        st.session_state.analysis_history.append({
+                            "query": query,
+                            "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "result": report
+                        })
+
                     except Exception as e:
                         st.error(f"Analysis failed for {pdf_file.name}: {str(e)}")
-
 
 
 elif st.session_state.page == "Files":
