@@ -57,6 +57,92 @@ if 'chat_history' not in st.session_state:
 # Load NLP Model for Entity Recognition
 nlp = spacy.load("en_core_web_sm")
 
+
+# Modified data extraction function without Java dependencies
+def extract_data_for_visualization(pdf_file):
+    """Extract numerical data from PDF using Python-only methods."""
+    try:
+        # Extract text from PDF
+        pdf_text = get_pdf_text(pdf_file)
+        
+        # Extract different types of data patterns
+        numbers = re.findall(r'(\d+(?:\.\d+)?(?:\s*%)?)', pdf_text)
+        dates = re.findall(r'\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4}', pdf_text)
+        
+        # Extract table-like structures
+        table_pattern = r'([A-Za-z\s]+)\s*[-:]\s*(\d+(?:\.\d+)?(?:\s*%)?)' # Pattern for label-value pairs
+        table_matches = re.findall(table_pattern, pdf_text)
+        
+        if table_matches:
+            # Create DataFrame from table-like data
+            df = pd.DataFrame(table_matches, columns=['Label', 'Value'])
+            df['Value'] = df['Value'].str.rstrip('%').astype(float)
+            return df
+        else:
+            # Create basic DataFrame from numbers and dates
+            df = pd.DataFrame({
+                'Date': dates[:min(len(dates), len(numbers))] if dates else range(len(numbers)),
+                'Value': [float(n.strip('%')) for n in numbers]
+            })
+            return df
+    except Exception as e:
+        st.error(f"Error extracting data: {str(e)}")
+        return None
+
+# Visualization functions
+def create_line_chart(df, x_col, y_col, title):
+    fig = px.line(df, x=x_col, y=y_col, title=title)
+    fig.update_layout(
+        template="plotly_white",
+        title_x=0.5,
+        margin=dict(t=50, l=50, r=50, b=50)
+    )
+    return fig
+
+def create_bar_chart(df, x_col, y_col, title):
+    fig = px.bar(df, x=x_col, y=y_col, title=title)
+    fig.update_layout(
+        template="plotly_white",
+        title_x=0.5,
+        margin=dict(t=50, l=50, r=50, b=50)
+    )
+    return fig
+
+def create_scatter_plot(df, x_col, y_col, title):
+    fig = px.scatter(df, x=x_col, y=y_col, title=title)
+    fig.update_layout(
+        template="plotly_white",
+        title_x=0.5,
+        margin=dict(t=50, l=50, r=50, b=50)
+    )
+    return fig
+
+def create_pie_chart(df, values, names, title):
+    fig = px.pie(df, values=values, names=names, title=title)
+    fig.update_layout(
+        template="plotly_white",
+        title_x=0.5,
+        margin=dict(t=50, l=50, r=50, b=50)
+    )
+    return fig
+
+def create_heatmap(df, title):
+    correlation_matrix = df.select_dtypes(include=[np.number]).corr()
+    fig = px.imshow(
+        correlation_matrix,
+        title=title,
+        color_continuous_scale='RdBu_r'
+    )
+    fig.update_layout(
+        template="plotly_white",
+        title_x=0.5,
+        margin=dict(t=50, l=50, r=50, b=50)
+    )
+    return fig
+
+
+
+
 def extract_entities(text):
     """Extracts market-related entities from text using NLP."""
     doc = nlp(text)
@@ -102,7 +188,25 @@ def get_analysis_chain(prompt_template):
 
 
 # Document Analysis
+# def analyze_document(file_name, query, prompt_template):
+#     folder_path = f"faiss_indexes/{file_name}"
+#     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+
+#     try:
+#         new_db = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
+#     except RuntimeError:
+#         st.error(f"Error loading FAISS index for {file_name}.")
+#         return
+
+#     docs = new_db.similarity_search(query)
+#     chain = get_analysis_chain(prompt_template)
+#     response = chain({"input_documents": docs}, return_only_outputs=True)
+
+#     return response["output_text"]
+
+
 def analyze_document(file_name, query, prompt_template):
+    import streamlit as st
     folder_path = f"faiss_indexes/{file_name}"
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
@@ -115,7 +219,12 @@ def analyze_document(file_name, query, prompt_template):
     docs = new_db.similarity_search(query)
     chain = get_analysis_chain(prompt_template)
     response = chain({"input_documents": docs}, return_only_outputs=True)
-
+    
+    st.markdown(f"""
+    ### Analysis Result
+    {response["output_text"]}
+    """)
+    
     return response["output_text"]
 
 
@@ -164,11 +273,117 @@ def comparative_analysis(file_name, query, domain):
         return f"Error during Gemini analysis: {str(e)}"
 
 
-# Chatbot Functionality
+
+cache = {}
+document_summaries = {}
+
+def summarize_document(text):
+    """Summarizes the given document content and extracts key points (only called once per document)."""
+    if text in cache:  # Check if already summarized
+        return cache[text]
+
+    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
+    prompt = (
+        "Summarize the following document while extracting all key points. "
+        "Ensure the summary is concise yet retains important details.\n\n"
+        f"Document:\n{text}\n\nSummary:"
+    )
+    summary = model.invoke(prompt).content
+    cache[text] = summary  # Store summary to avoid redundant API calls
+    return summary
+
+def preprocess_uploaded_documents():
+    """Processes uploaded documents, extracts key points, and stores summaries."""
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+
+    for pdf_file in st.session_state.uploaded_files:
+        file_name = os.path.splitext(pdf_file.name)[0]
+        folder_path = f"faiss_indexes/{file_name}"
+
+        if os.path.exists(folder_path):
+            try:
+                vector_store = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
+
+                # Retrieve chunks for summarization
+                docs = vector_store.similarity_search("", k=5)  # Reduce k to lower API usage
+                text_content = "\n".join([doc.page_content.strip() for doc in docs])
+
+                # Summarize document (only if not already done)
+                if file_name not in document_summaries:
+                    document_summaries[file_name] = summarize_document(text_content)
+
+            except Exception as e:
+                st.error(f"Error processing {file_name}: {e}")
+
 def chatbot_response(user_input):
-    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.3)  # Using Gemini 2.0 Flash
-    response = model.invoke(user_input)
+    if not st.session_state.get("uploaded_files"):
+        return "No documents uploaded! Please upload a document first."
+
+    # Check if response is already cached
+    if user_input in cache:
+        return cache[user_input]
+
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    relevant_chunks = []
+
+    # Search FAISS index first to find exact matches
+    for pdf_file in st.session_state.uploaded_files:
+        file_name = os.path.splitext(pdf_file.name)[0]
+        folder_path = f"faiss_indexes/{file_name}"
+
+        if os.path.exists(folder_path):
+            try:
+                vector_store = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
+                docs = vector_store.similarity_search(user_input, k=3)  # Retrieve only top 3 chunks
+                
+                # Extract unique relevant chunks
+                unique_chunks = list(set([doc.page_content.strip() for doc in docs if doc.page_content.strip()]))
+                relevant_chunks.extend(unique_chunks)
+
+            except Exception as e:
+                st.error(f"Error searching FAISS index for {file_name}: {e}")
+
+    # If no exact match is found, use document summaries instead
+    if not relevant_chunks:
+        relevant_chunks = [document_summaries.get(os.path.splitext(pdf.name)[0], "") for pdf in st.session_state.uploaded_files]
+
+    summarized_context = "\n".join(filter(None, relevant_chunks))
+
+    # If still no content, avoid an unnecessary API call
+    if not summarized_context:
+        return "I couldn't find an exact answer, but I can try to infer from related document content. Let me know if you need more details."
+
+    # If a relevant answer is already found in the retrieved text, return it directly
+    if len(relevant_chunks) == 1 and len(relevant_chunks[0].split()) < 50:
+        cache[user_input] = relevant_chunks[0]  # Cache short direct answers
+        return relevant_chunks[0]
+
+    # Optimized prompt to minimize token consumption
+    prompt_template = (
+        "You are an AI assistant that answers questions strictly based on the provided document context. "
+        "Use only the given context to generate a well-explained answer. Do NOT generate information outside the document.\n\n"
+        "Context:\n{context}\n\nUser Question: {user_input}\n\n"
+        "Provide a detailed and easy-to-understand response in simple terms."
+        # "Provide the answer in abou 100 words"
+    )
+    prompt = prompt_template.format(context=summarized_context, user_input=user_input)
+
+    # Call AI model *only if absolutely necessary*
+    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
+    response = model.invoke(prompt).content
+
+    # Cache response to prevent redundant API calls
+    cache[user_input] = response
+
     return response
+
+
+
+
+
+
+
+
 
 
 # Sidebar Navigation
@@ -255,7 +470,7 @@ Response Format:
 if "page" not in st.session_state:
     st.session_state.page = "Upload Files"
 
-if st.session_state.page == "Upload Files":
+elif st.session_state.page == "Upload Files":
     st.title("Upload Competitor Reports")
     st.write("### Step 1: Select the Document Domain")
 
@@ -397,21 +612,22 @@ elif st.session_state.page == "Files":
     for file in st.session_state.uploaded_files:
         st.write(f"📄 {file.name}")
 
-if st.session_state.page == "Chatbot":
+
+elif st.session_state.page == "Chatbot":
     st.title("Intel360 Chatbot 🤖")
-    st.markdown("**Ask about competitor analysis, insights, and AI-generated reports!**")
-
+    st.markdown("*Ask about competitor analysis, insights, and AI-generated reports!*")
+    
     user_input = st.text_input("Ask me anything about competitor analysis:")
-
+    
     if user_input:
         response = chatbot_response(user_input)
         st.session_state.chat_history.append({"query": user_input, "response": response})
         st.markdown("### 🤖 Chatbot Response")
         st.markdown(f"{response}")  # Displaying response in markdown for better formatting
-
+    
     # Display chat history
     st.subheader("🗂️ Chat History")
     for chat in st.session_state.chat_history:
-        st.write(f"**Q:** {chat['query']}")
-        st.markdown(f"**A:** {chat['response']}")
+        st.write(f"*Q:* {chat['query']}")
+        st.markdown(f"*A:* {chat['response']}")
         st.markdown("---")
