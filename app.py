@@ -71,9 +71,13 @@ def get_pdf_text(pdf_file):
     pdf_reader = PdfReader(io.BytesIO(pdf_bytes))
     return "".join([page.extract_text() for page in pdf_reader.pages])
 
+
+
 # Split text into chunks
 def get_text_chunks(text):
     return RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000).split_text(text)
+
+
 
 # Process and save FAISS index
 def process_file(pdf_file):
@@ -109,194 +113,6 @@ def analyze_document(file_name, query, prompt_template):
     response = chain({"input_documents": docs}, return_only_outputs=True)
     
     return response["output_text"]
-
-
-# def chatbot_response(user_input):
-#     model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-#     response = model.invoke(user_input)
-#     return response.content  # Extracting only the content for readability
-
-
-
-
-
-
-
-# # Caching AI responses to reduce duplicate API calls
-# cache = {}
-
-# def chatbot_response(user_input):
-#     if not st.session_state.get("uploaded_files"):
-#         return "No documents uploaded! Please upload a document first."
-
-#     # Check if response is already cached
-#     if user_input in cache:
-#         return cache[user_input]
-
-#     relevant_docs = []
-#     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-#     # Search for relevant chunks in uploaded documents
-#     for pdf_file in st.session_state.uploaded_files:
-#         file_name = os.path.splitext(pdf_file.name)[0]
-#         folder_path = f"faiss_indexes/{file_name}"
-
-#         if os.path.exists(folder_path):
-#             try:
-#                 # Load FAISS index
-#                 vector_store = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
-                
-#                 # Retrieve top 3 most relevant chunks
-#                 docs = vector_store.similarity_search(user_input, k=3)
-                
-#                 # Filter out duplicate/irrelevant responses
-#                 unique_chunks = list(set([doc.page_content.strip() for doc in docs if doc.page_content.strip()]))
-#                 relevant_docs.extend(unique_chunks)
-
-#             except Exception as e:
-#                 st.error(f"Error loading FAISS index for {file_name}: {e}")
-
-#     # If no relevant document content found, avoid unnecessary AI calls
-#     if not relevant_docs:
-#         return "I couldn't find an exact match in the uploaded documents. Try rephrasing your question."
-
-#     # If a single chunk fully answers the question, return it directly (saving API cost)
-#     if len(relevant_docs) == 1 and len(relevant_docs[0].split()) < 50:
-#         return relevant_docs[0]  # Directly return the short answer
-
-#     # Combine retrieved chunks as context
-#     context = "\n".join(relevant_docs)
-
-#     # Optimized prompt to reduce token consumption
-#     prompt_template = (
-#         "You are an AI assistant that answers questions strictly based on the provided document context. "
-#         "Use only the given context to generate a clear, well-explained answer. Do NOT generate information outside the document.\n\n"
-#         "Context:\n{context}\n\nUser Question: {user_input}\n\n"
-#         "Provide a precise and easy-to-understand response in simple terms."
-#     )
-#     prompt = prompt_template.format(context=context, user_input=user_input)
-
-#     # Call AI model only when necessary
-#     model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-#     response = model.invoke(prompt).content
-
-#     # Cache response to prevent redundant API calls
-#     cache[user_input] = response
-
-#     return response
-
-
-
-
-
-
-
-
-
-
-# cache = {}
-# document_summaries = {}
-
-# def summarize_document(text):
-#     """Summarizes the given document content and extracts key points."""
-#     model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-#     prompt = (
-#         "Summarize the following document while extracting all key points. "
-#         "Ensure the summary is concise yet retains important details.\n\n"
-#         f"Document:\n{text}\n\nSummary:"
-#     )
-#     return model.invoke(prompt).content
-
-# def preprocess_uploaded_documents():
-#     """Processes uploaded documents, extracts key points, and stores summaries."""
-#     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-#     for pdf_file in st.session_state.uploaded_files:
-#         file_name = os.path.splitext(pdf_file.name)[0]
-#         folder_path = f"faiss_indexes/{file_name}"
-
-#         if os.path.exists(folder_path):
-#             try:
-#                 vector_store = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
-                
-#                 # Retrieve more chunks to form a meaningful summary
-#                 docs = vector_store.similarity_search("", k=10)
-#                 text_content = "\n".join([doc.page_content.strip() for doc in docs])
-
-#                 # Summarize document and store it
-#                 document_summaries[file_name] = summarize_document(text_content)
-
-#             except Exception as e:
-#                 st.error(f"Error processing {file_name}: {e}")
-
-# def chatbot_response(user_input):
-#     if not st.session_state.get("uploaded_files"):
-#         return "No documents uploaded! Please upload a document first."
-
-#     # Check if response is already cached
-#     if user_input in cache:
-#         return cache[user_input]
-
-#     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-#     relevant_chunks = []
-
-#     # Search summaries and retrieve relevant information
-#     for pdf_file in st.session_state.uploaded_files:
-#         file_name = os.path.splitext(pdf_file.name)[0]
-#         folder_path = f"faiss_indexes/{file_name}"
-
-#         if os.path.exists(folder_path):
-#             try:
-#                 vector_store = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
-#                 docs = vector_store.similarity_search(user_input, k=3)  # Retrieve relevant chunks
-                
-#                 unique_chunks = list(set([doc.page_content.strip() for doc in docs if doc.page_content.strip()]))
-#                 relevant_chunks.extend(unique_chunks)
-
-#             except Exception as e:
-#                 st.error(f"Error searching FAISS index for {file_name}: {e}")
-
-#     # If no relevant chunks are found, attempt to use document summaries instead
-#     if not relevant_chunks:
-#         relevant_chunks = [document_summaries.get(os.path.splitext(pdf.name)[0], "") for pdf in st.session_state.uploaded_files]
-    
-#     summarized_context = "\n".join(filter(None, relevant_chunks))
-
-#     if not summarized_context:
-#         return "I couldn't find an exact answer, but I can try to infer from related document content. Let me know if you want more details."
-
-#     # Optimized prompt using relevant document content
-#     prompt_template = (
-#         "You are an AI assistant that answers questions strictly based on the provided document context. "
-#         "Use only the given context to generate a well-explained answer. Do NOT generate information outside the document.\n\n"
-#         "Context:\n{context}\n\nUser Question: {user_input}\n\n"
-#         "Provide a precise and easy-to-understand response in simple terms."
-#     )
-#     prompt = prompt_template.format(context=summarized_context, user_input=user_input)
-
-#     # Call AI model only when necessary
-#     model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-#     response = model.invoke(prompt).content
-
-#     # Cache response to prevent redundant API calls
-#     cache[user_input] = response
-
-#     return response
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 cache = {}
 document_summaries = {}
@@ -387,7 +203,8 @@ def chatbot_response(user_input):
         "You are an AI assistant that answers questions strictly based on the provided document context. "
         "Use only the given context to generate a well-explained answer. Do NOT generate information outside the document.\n\n"
         "Context:\n{context}\n\nUser Question: {user_input}\n\n"
-        "Provide a precise and easy-to-understand response in simple terms."
+        "Provide a detailed and easy-to-understand response in simple terms."
+        # "Provide the answer in abou 100 words"
     )
     prompt = prompt_template.format(context=summarized_context, user_input=user_input)
 
@@ -399,14 +216,6 @@ def chatbot_response(user_input):
     cache[user_input] = response
 
     return response
-
-
-
-
-
-
-
-
 
 
 
