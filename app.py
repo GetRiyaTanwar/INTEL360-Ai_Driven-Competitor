@@ -4,7 +4,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 import os
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import google.generativeai as genai
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
@@ -13,11 +13,10 @@ import io
 from dotenv import load_dotenv
 import spacy
 import base64
-import openai
-from langchain.chat_models import ChatOpenAI 
 
 # Set page config
 st.set_page_config(page_title="INSIGHT IQ", layout="wide")
+
 
 # Convert the image to base64
 def get_image_base64(image_path):
@@ -28,6 +27,7 @@ def get_image_base64(image_path):
     except FileNotFoundError:
         st.error("Logo file not found. Please ensure the correct path.")
         return None
+
 
 # Load logo image
 logo_base64 = get_image_base64("INSIGHT IQ LOGO.png")
@@ -44,10 +44,6 @@ if logo_base64:
 # Load API key
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-openai_api_key = os.getenv("OPENAI_API_KEY")
-
-# Initialize OpenAI Model
-openai_model = ChatOpenAI(model_name="gpt-3.5-turbo", openai_api_key=openai_api_key)
 
 
 # Session State Initialization
@@ -64,7 +60,14 @@ nlp = spacy.load("en_core_web_sm")
 def extract_entities(text):
     """Extracts market-related entities from text using NLP."""
     doc = nlp(text)
+
+    def extract_entities(text):
+        """Extracts market-related entities from text using NLP."""
+        doc = nlp(text)
+        return {ent.label_: ent.text for ent in doc.ents if ent.label_ in ["ORG", "MONEY", "PERCENT", "GPE"]}
+
     return {ent.label_: ent.text for ent in doc.ents if ent.label_ in ["ORG", "MONEY", "PERCENT", "GPE"]}
+
 
 # Extract text from PDFs
 def get_pdf_text(pdf_file):
@@ -72,9 +75,11 @@ def get_pdf_text(pdf_file):
     pdf_reader = PdfReader(io.BytesIO(pdf_bytes))
     return "".join([page.extract_text() for page in pdf_reader.pages])
 
+
 # Split text into chunks
 def get_text_chunks(text):
     return RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000).split_text(text)
+
 
 # Process and save FAISS index
 def process_file(pdf_file):
@@ -83,37 +88,40 @@ def process_file(pdf_file):
     file_name = os.path.splitext(pdf_file.name)[0]
     folder_path = f"faiss_indexes/{file_name}"
     os.makedirs(folder_path, exist_ok=True)
-    
+
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local(folder_path)
     st.success(f"Processed: {pdf_file.name}")
 
+
 # AI Model for analysis
 def get_analysis_chain(prompt_template):
-    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
+    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.3)
     return load_qa_chain(model, chain_type="stuff", prompt=PromptTemplate(template=prompt_template, input_variables=["context"]))
+
 
 # Document Analysis
 def analyze_document(file_name, query, prompt_template):
     folder_path = f"faiss_indexes/{file_name}"
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    
+
     try:
         new_db = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
     except RuntimeError:
         st.error(f"Error loading FAISS index for {file_name}.")
         return
-    
+
     docs = new_db.similarity_search(query)
     chain = get_analysis_chain(prompt_template)
     response = chain({"input_documents": docs}, return_only_outputs=True)
-    
+
     return response["output_text"]
+
 
 def comparative_analysis(file_name, query, domain):
     folder_path = f"faiss_indexes/{file_name}"
-    
+
     try:
         # Load the FAISS index
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
@@ -124,62 +132,43 @@ def comparative_analysis(file_name, query, domain):
 
     # Define structured queries for each domain
     structured_query = ""
-    if domain == "Healthcare":
+    if domain == "Mutual Funds":  # Removed unnecessary spaces
         structured_query = """
-        Perform a **comparative analysis** of competitors in the Healthcare sector based on the following parameters:
+        Perform a comparative analysis of competitors in the Mutual funds sector based on the following parameters from the upload document :
 
-        - **Business Models**: Key offerings, revenue models, target customers  
-        - **Revenue Streams**: Subscription services, licensing, one-time payments  
-        - **Expansion Plans**: Future growth, targeted regions, partnerships  
-        - **Pricing Strategies**: Discount models, competitive pricing, value-based pricing  
-        - **Competitive Advantages**: Key differentiators, technology, patents  
-        - **Innovation Adoption**: AI, telemedicine, wearables, blockchain  
-        - **Partnerships**: Collaborations, alliances, acquisitions  
-        - **Customer Acquisition Strategies**: Marketing, influencer engagement, referral programs  
 
-        Output the response in a **structured tabular format** with competitor names as rows and comparison metrics as columns.
+        Output the response in a structured tabular format with competitor names as columns and comparison metrics as rows using Markdown table format.  Ensure clarity, completeness, and actionable insights in your analyses.
         """
     elif domain == "Life Insurance":
         structured_query = """
-        Perform a **comparative analysis** of competitors in the Life Insurance sector based on the following parameters:
+        Perform a comparative analysis of competitors in the Life Insurance sector based on the uploaded document 
 
-        - **Business Models**: Types of insurance (term, whole life, ULIP), target customer segments  
-        - **Revenue Streams**: Premium collections, investment returns, policy surrender charges  
-        - **Expansion Plans**: New product launches, market expansion, acquisitions  
-        - **Pricing Strategies**: Premium models (fixed, variable), bundling options, discounts  
-        - **Competitive Advantages**: Unique selling points like fast claims processing, digital tools  
-        - **Innovation Adoption**: AI risk assessment, blockchain claims management, health monitoring wearables  
-        - **Partnerships**: Collaborations with banks, health apps, wellness platforms  
-        - **Customer Acquisition Strategies**: Digital marketing, influencers, referral programs  
 
-        Output the response in a **structured tabular format** with competitor names as rows and comparison metrics as columns.
+        Output the response in a structured tabular format with competitor names as columns and comparison metrics as rows using Markdown table format.  Ensure clarity, completeness, and actionable insights in your analyses.
         """
     else:
         return "Invalid domain selection."
 
-    # Use OpenAI GPT-3.5 Turbo for analysis
     try:
-        # Send the structured query to the model
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a business analysis expert."},
-                {"role": "user", "content": structured_query}
-            ]
+        # Prepare the prompt for Gemini 2.0 Flash
+        prompt_template = PromptTemplate.from_template(
+            "You are a business analysis expert specialized in competitive analysis. You are excellent at presenting insights in a structured, tabular format using Markdown tables. Ensure clarity, completeness, and actionable insights in your analyses.\n\n{text}"
         )
-        return response["choices"][0]["message"]["content"]
+        formatted_prompt = prompt_template.format(text=structured_query)
 
+        # Call Gemini 2.0 Flash through Langchain
+        model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.3)
+        response = model.invoke(formatted_prompt)  # Invoke the model directly
+        return response.content  # Access content attribute to get the string
     except Exception as e:
-        return f"Error during OpenAI analysis: {str(e)}"
-    
+        return f"Error during Gemini analysis: {str(e)}"
+
 
 # Chatbot Functionality
 def chatbot_response(user_input):
-    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
+    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.3)  # Using Gemini 2.0 Flash
     response = model.invoke(user_input)
     return response
-
-
 
 
 # Sidebar Navigation
@@ -188,121 +177,79 @@ if "page" not in st.session_state:
     st.session_state.page = "Upload Files"
 
 st.markdown(
-        """
-        <style>
-        .stButton > button {
-            width: 100%;
-            margin-bottom: 5px;
-            font-size: 16px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    """
+    <style>
+    .stButton > button {
+        width: 100%;
+        margin-bottom: 5px;
+        font-size: 16px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 pages = {
-        "Dashboard": "📊",
-        "Upload Files": "📂",
-        "Analysis": "📈",
-        "Files": "📁",
-        "Chatbot": "🤖"
-    }
-
+    "Dashboard": "📊",
+    "Upload Files": "📂",
+    "Analysis": "📈",
+    "Files": "📁",
+    "Chatbot": "🤖"
+}
 
 for page, icon in pages.items():
     if st.sidebar.button(f"{icon} {page}"):
         st.session_state.page = page
 
-
 # Domain prompts dictionary
 domain_prompts = {
-    "Healthcare": {
-        "Competitor Strategy": """Analyze competitor strategies within the Healthcare sector. Extract insights and structure the output under these headings: 
+    "Mutual Funds": {
+        "Competitor Strategy": """Analyze competitor strategies within the Mutual Funds sector. Extract insights and structure the output.  Focus on investment strategies, fund performance, expense ratios, and marketing tactics.
 
-- **Business Models:** Key service offerings, target customers, and revenue approaches.
-- **Revenue Streams:** Breakdown of income sources (e.g., subscriptions, services, licensing).
-- **Expansion Plans:** Future growth strategies, regions targeted, and partnerships.
-- **Pricing Strategies:** Competitive pricing models, discounts, and value-based pricing.
-- **Competitive Advantages:** Unique features, technological innovations, or patents.
-- **Innovation Adoption:** Use of AI, telemedicine, wearables, or advanced diagnostics.
-- **Partnerships:** Key collaborations and their impact on market presence.
-- **Customer Acquisition Strategies:** Marketing channels, campaigns, and engagement tactics.
+Response Format:
+•⁠  ⁠Present each section as bullet points.
+•⁠  ⁠Include quantitative metrics such as AUM (Assets Under Management), expense ratios, and fund returns.
+•⁠  ⁠Provide comparative insights between different fund houses and their strategies.
+•⁠  ⁠Highlight trends using tables or charts for clarity (e.g., market share trends, fund performance comparison charts).""",
 
-**Response Format:**
-- Present each section as bullet points.
-- Include quantitative metrics (e.g., revenue figures, market share percentages, customer growth rates) if available.
-- Provide comparative insights (e.g., which competitor leads in innovation adoption).
-- Highlight trends using tables or charts for clarity (e.g., market share trends, pricing comparison charts).""",
+        "Market Trends": """Identify key market trends in the Mutual Funds sector.  Focus on asset allocation trends, investor preferences, and regulatory changes.
 
-        "Market Trends": """Identify key market trends in the Healthcare sector. Focus on emerging innovations, regulatory shifts, and financial growth patterns. Provide detailed analysis on: 
+Response Format:
+•⁠  ⁠Present insights in concise bullet points.
+•⁠  ⁠Include relevant data visualizations for trend comparison, such as asset allocation shifts over time and growth in specific fund categories.""",
 
-- **Industry Growth:** Yearly market expansion and emerging trends.
-- **Regulatory Changes:** Impact of new healthcare laws and compliance requirements.
-- **Emerging Technologies:** AI, wearables, and telemedicine adoption.
-- **Market Dynamics:** Competitive shifts, mergers, and acquisitions.
+        "SWOT Analysis": """Perform a SWOT analysis of key mutual fund competitors.  Analyze their strengths, weaknesses, opportunities, and threats in the current market environment.
 
-**Response Format:**
-- Present insights in concise bullet points.
-- Include relevant data visualizations for trend comparison.""",
+Response Format:
+•⁠  ⁠Structure the SWOT analysis in a tabular format.
+•⁠  ⁠Provide comparative insights on key competitors, highlighting their competitive advantages and vulnerabilities.""",
 
-        "SWOT Analysis": """Perform a SWOT analysis of key healthcare competitors. Analyze the following: 
-
-- **Strengths:** Technological advantages, market leadership, revenue sources.
-- **Weaknesses:** Regulatory challenges, limited scalability, operational inefficiencies.
-- **Opportunities:** Market expansion, emerging technology integration, new consumer segments.
-- **Threats:** Competitor strategies, regulatory risks, economic downturns.
-
-**Response Format:**
-- Structure the SWOT analysis in a tabular format.
-- Provide comparative insights on key competitors.""",
-
-        "Comparative Analysis": """{selected_domain} comparative analysis request received."""
+        "Comparative Analysis": """{selected_domain} comparative analysis request received. Present the output in a Markdown table, comparing key metrics such as fund performance, expense ratios, and AUM across different fund houses."""
     },
 
     "Life Insurance": {
-        "Competitor Strategy": """Analyze competitor strategies within the Life Insurance sector. Extract insights and structure the output under these headings: 
+        "Competitor Strategy": """Analyze competitor strategies within the Life Insurance sector. Extract insights and structure the output.  Focus on product offerings, pricing strategies, and distribution channels.
 
-- **Business Models:** Types of insurance offered (e.g., term, whole life, ULIP), customer segments targeted, and distribution channels.
-- **Revenue Streams:** Breakdown of income sources such as premiums, investment returns, and policy surrender charges.
-- **Expansion Plans:** Future growth strategies including new product launches, market expansions, or acquisitions.
-- **Pricing Strategies:** Premium pricing models, discounts for long-term policies, or bundling options.
-- **Competitive Advantages:** Unique value propositions such as faster claims processing, personalized coverage, or digital tools.
-- **Innovation Adoption:** AI for risk assessment, blockchain for claims management, or wearables for health monitoring.
-- **Partnerships:** Collaborations with banks, health apps, or wellness platforms.
-- **Customer Acquisition Strategies:** Marketing campaigns, use of influencers, referral programs, or loyalty schemes.
+Response Format:
+•⁠  ⁠Present insights using bullet points.
+•⁠  ⁠Include quantitative metrics such as premium growth rates and claim settlement ratios if available.
+•⁠  ⁠Highlight trends using charts or tables, such as market share trends and customer acquisition costs.""",
 
-**Response Format:**
-- Present insights using bullet points.
-- Include quantitative metrics such as premium growth rates and claim settlement ratios.
-- Highlight trends using charts or tables.""",
+        "Market Trends": """Analyze key market trends in the Life Insurance industry.  Focus on changing consumer needs, regulatory developments, and technological advancements.
 
-        "Market Trends": """Analyze key market trends in the Life Insurance industry, including: 
+Response Format:
+•⁠  ⁠Use data visualizations where possible.
+•⁠  ⁠Compare industry growth rates and market penetration, highlighting key drivers of change.""",
 
-- **Growth in digital insurance adoption.**
-- **The rise of AI-driven risk assessment.**
-- **Impact of changing regulations on policies.**
-- **Shift towards personalized and flexible policy structures.**
+        "SWOT Analysis": """Perform a SWOT analysis of life insurance competitors:
 
-**Response Format:**
-- Use data visualizations where possible.
-- Compare industry growth rates and market penetration.""",
+Response Format:
+•⁠  ⁠Present SWOT analysis in a structured table.
+•⁠  ⁠Provide insights into emerging competitive threats, such as new entrants or disruptive technologies.""",
 
-        "SWOT Analysis": """Perform a SWOT analysis of life insurance competitors: 
-
-- **Strengths:** Market leadership, technological capabilities, customer trust.
-- **Weaknesses:** High claim ratios, pricing disadvantages, policy limitations.
-- **Opportunities:** Growth in digital insurance, AI-powered underwriting.
-- **Threats:** Regulatory hurdles, economic downturns, new fintech competitors.
-
-**Response Format:**
-- Present SWOT analysis in a structured table.
-- Provide insights into emerging competitive threats.""",
-
-        "Comparative Analysis": """{selected_domain} comparative analysis request received."""
+        "Comparative Analysis": """{selected_domain} comparative analysis request received. Present the output in a Markdown table, comparing key metrics such as premium rates, policy features, and claim settlement ratios across different insurance providers."""
     }
 }
-
-
 
 # Page Handling
 if "page" not in st.session_state:
@@ -311,21 +258,21 @@ if "page" not in st.session_state:
 if st.session_state.page == "Upload Files":
     st.title("Upload Competitor Reports")
     st.write("### Step 1: Select the Document Domain")
-    
+
     domain_mapping = {
-        "Healthcare": "Market growth, regulatory impact, emerging technologies.",
+        "Mutual Funds": "Investment strategies, fund performance, expense ratios, and marketing tactics.",
         "Life Insurance": "Risk management, policy innovations, customer engagement strategies."
     }
-    
-      # Initialize session state for selected_domain if not set
+
+    # Initialize session state for selected_domain if not set
     if "selected_domain" not in st.session_state:
         st.session_state.selected_domain = "Select a domain"
 
     # Dropdown for selecting domain
     selected_domain = st.selectbox(
-        "Select Document Domain", 
-        ["Select a domain"] + list(domain_mapping.keys()), 
-        index=list(domain_mapping.keys()).index(st.session_state.selected_domain) 
+        "Select Document Domain",
+        ["Select a domain"] + list(domain_mapping.keys()),
+        index=list(domain_mapping.keys()).index(st.session_state.selected_domain)
         if st.session_state.selected_domain in domain_mapping else 0
     )
 
@@ -341,18 +288,18 @@ if st.session_state.page == "Upload Files":
     else:
         st.success(f"You selected **{selected_domain}**. Expected PDF content: {domain_mapping[selected_domain]}")
         file_uploader_disabled = False
-    
+
     uploaded_files = st.file_uploader(
-        "Select PDFs", 
-        type=["pdf"], 
+        "Select PDFs",
+        type=["pdf"],
         accept_multiple_files=True,
         disabled=file_uploader_disabled
     )
-    
+
     if uploaded_files:
         st.session_state.uploaded_files = uploaded_files
         st.success(f"{len(uploaded_files)} file(s) uploaded successfully for {selected_domain} analysis.")
-    
+
     if st.button("Submit & Process") and uploaded_files:
         st.write("Processing files...")
         st.session_state.uploaded_files = uploaded_files
@@ -385,7 +332,10 @@ elif st.session_state.page == "Analysis":
     else:
         # Domain & Analysis Selection
         selected_domain = st.session_state.selected_domain
-        analysis_type = st.selectbox("Select analysis type", list(domain_prompts[selected_domain].keys()))
+
+        # Use the actual dictionary keys for selectbox options
+        analysis_options = list(domain_prompts[selected_domain].keys())  #Get the keys
+        analysis_type = st.selectbox("Select analysis type", analysis_options)
 
         if st.button("Run Analysis"):
             for pdf_file in st.session_state.uploaded_files:
@@ -402,11 +352,14 @@ elif st.session_state.page == "Analysis":
                 with st.spinner("Analyzing..."):
                     try:
                         if analysis_type == "Comparative Analysis":
-                            report = comparative_analysis(file_name, query, selected_domain)
+                            # Pass the selected_domain to the function
+                            report = comparative_analysis(file_name=file_name, query=query, domain=selected_domain)
+                            # Display the report as markdown
+                            st.markdown(f"## Analysis Report for {pdf_file.name}")
+                            st.markdown(report, unsafe_allow_html=True)  # Use st.markdown for tables
                         else:
                             report = analyze_document(file_name, query, f"Context: {{context}}")
-
-                        st.text_area(f"Analysis Report for {pdf_file.name}", value=report, height=300)
+                            st.text_area(f"Analysis Report for {pdf_file.name}", value=report, height=300)
 
                         # Store analysis history in session state
                         st.session_state.setdefault("analysis_history", []).append({
@@ -429,7 +382,7 @@ elif st.session_state.page == "Dashboard":
     st.title("Dashboard 📊")
     st.metric("📊 Total Analyses", len(st.session_state.analysis_history))
     st.subheader("📜 Analysis History")
-    
+
     if st.session_state.analysis_history:
         for analysis in st.session_state.analysis_history:
             st.markdown(f"**Query:** {analysis['query']}")
@@ -439,7 +392,6 @@ elif st.session_state.page == "Dashboard":
     else:
         st.info("No analysis history available.")
 
-
 elif st.session_state.page == "Files":
     st.title("Uploaded Files")
     for file in st.session_state.uploaded_files:
@@ -448,15 +400,15 @@ elif st.session_state.page == "Files":
 if st.session_state.page == "Chatbot":
     st.title("Intel360 Chatbot 🤖")
     st.markdown("**Ask about competitor analysis, insights, and AI-generated reports!**")
-    
+
     user_input = st.text_input("Ask me anything about competitor analysis:")
-    
+
     if user_input:
         response = chatbot_response(user_input)
         st.session_state.chat_history.append({"query": user_input, "response": response})
         st.markdown("### 🤖 Chatbot Response")
         st.markdown(f"{response}")  # Displaying response in markdown for better formatting
-    
+
     # Display chat history
     st.subheader("🗂️ Chat History")
     for chat in st.session_state.chat_history:
