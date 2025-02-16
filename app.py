@@ -173,107 +173,10 @@ def comparative_analysis(file_name, query, domain):
         return f"Error during OpenAI analysis: {str(e)}"
     
 
-cache = {}
-document_summaries = {}
-
-def summarize_document(text):
-    """Summarizes the given document content and extracts key points (only called once per document)."""
-    if text in cache:  # Check if already summarized
-        return cache[text]
-
-    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-    prompt = (
-        "Summarize the following document while extracting all key points. "
-        "Ensure the summary is concise yet retains important details.\n\n"
-        f"Document:\n{text}\n\nSummary:"
-    )
-    summary = model.invoke(prompt).content
-    cache[text] = summary  # Store summary to avoid redundant API calls
-    return summary
-
-
-def preprocess_uploaded_documents():
-    """Processes uploaded documents, extracts key points, and stores summaries."""
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-    for pdf_file in st.session_state.uploaded_files:
-        file_name = os.path.splitext(pdf_file.name)[0]
-        folder_path = f"faiss_indexes/{file_name}"
-
-        if os.path.exists(folder_path):
-            try:
-                vector_store = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
-
-                # Retrieve chunks for summarization
-                docs = vector_store.similarity_search("", k=5)  # Reduce `k` to lower API usage
-                text_content = "\n".join([doc.page_content.strip() for doc in docs])
-
-                # Summarize document (only if not already done)
-                if file_name not in document_summaries:
-                    document_summaries[file_name] = summarize_document(text_content)
-
-            except Exception as e:
-                st.error(f"Error processing {file_name}: {e}")
-
+# Chatbot Functionality
 def chatbot_response(user_input):
-    if not st.session_state.get("uploaded_files"):
-        return "No documents uploaded! Please upload a document first."
-
-    # Check if response is already cached
-    if user_input in cache:
-        return cache[user_input]
-
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    relevant_chunks = []
-
-    # Search FAISS index first to find exact matches
-    for pdf_file in st.session_state.uploaded_files:
-        file_name = os.path.splitext(pdf_file.name)[0]
-        folder_path = f"faiss_indexes/{file_name}"
-
-        if os.path.exists(folder_path):
-            try:
-                vector_store = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
-                docs = vector_store.similarity_search(user_input, k=3)  # Retrieve only top 3 chunks
-                
-                # Extract unique relevant chunks
-                unique_chunks = list(set([doc.page_content.strip() for doc in docs if doc.page_content.strip()]))
-                relevant_chunks.extend(unique_chunks)
-
-            except Exception as e:
-                st.error(f"Error searching FAISS index for {file_name}: {e}")
-
-    # If no exact match is found, use document summaries instead
-    if not relevant_chunks:
-        relevant_chunks = [document_summaries.get(os.path.splitext(pdf.name)[0], "") for pdf in st.session_state.uploaded_files]
-
-    summarized_context = "\n".join(filter(None, relevant_chunks))
-
-    # If still no content, avoid an unnecessary API call
-    if not summarized_context:
-        return "I couldn't find an exact answer, but I can try to infer from related document content. Let me know if you need more details."
-
-    # If a relevant answer is already found in the retrieved text, return it directly
-    if len(relevant_chunks) == 1 and len(relevant_chunks[0].split()) < 50:
-        cache[user_input] = relevant_chunks[0]  # Cache short direct answers
-        return relevant_chunks[0]
-
-    # Optimized prompt to minimize token consumption
-    prompt_template = (
-        "You are an AI assistant that answers questions strictly based on the provided document context. "
-        "Use only the given context to generate a well-explained answer. Do NOT generate information outside the document.\n\n"
-        "Context:\n{context}\n\nUser Question: {user_input}\n\n"
-        "Provide a precise and easy-to-understand response in simple terms."
-    )
-    prompt = prompt_template.format(context=summarized_context, user_input=user_input)
-
-    # Call AI model **only if absolutely necessary**
     model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-    response = model.invoke(prompt).content
-
-    # Cache response to prevent redundant API calls
-    cache[user_input] = response
-
+    response = model.invoke(user_input)
     return response
 
 
