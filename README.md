@@ -53,7 +53,7 @@ Follow these steps to set up and run INSIGHT IQ on your local machine:
 1.  **Clone the Repository:**
 
     ```bash
-    git clone https://github.com/GetRiyaTanwar/INTEL360-Ai_Driven-Competitor.git
+    git clone -b develop https://github.com/GetRiyaTanwar/INTEL360-Ai_Driven-Competitor.git
     cd INTEL360-Ai_Driven-Competitor
     ```
 
