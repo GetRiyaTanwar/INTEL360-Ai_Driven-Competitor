@@ -111,3 +111,6 @@ Follow these steps to set up and run INSIGHT IQ on your local machine:
 *   `INSIGHT IQ LOGO.png`: The application logo image.
 *   `.env`: (Optional) File to store environment variables (like the API key).  Make sure to add this file to your `.gitignore`.
 
+**VIDEO_DEMO**
+https://drive.google.com/file/d/1ZO-koAOc6_AwTgvQYb-biga4XkcE_EWX/view?usp=drive_link
+
