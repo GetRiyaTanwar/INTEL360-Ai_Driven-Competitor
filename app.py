@@ -1,366 +1,472 @@
-import streamlit as st
-from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+# app.py
 import os
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import io
+import time
+import json
+import base64
+import traceback
+from typing import List, Optional
+
+import streamlit as st
+from dotenv import load_dotenv
 import google.generativeai as genai
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from PyPDF2 import PdfReader
 import pandas as pd
-import io
-from dotenv import load_dotenv
-import spacy
-import base64
-import time  # Import time module for rate limiting
 
-# Set page config
+# Optional NLP
+import spacy
+from spacy.util import is_package
+
+# ----------------------------
+# Page & app configuration
+# ----------------------------
 st.set_page_config(page_title="INSIGHT IQ", layout="wide")
 
+# ----------------------------
+# Load .env (optional default)
+# ----------------------------
+load_dotenv()
+DEFAULT_API_KEY = os.getenv("GOOGLE_API_KEY", None)
 
-# Convert the image to base64
-def get_image_base64(image_path):
-    """Convert the image to base64 format for embedding in HTML."""
+# ----------------------------
+# Session state defaults
+# ----------------------------
+if "page" not in st.session_state:
+    st.session_state.page = "API Key Setup" if not DEFAULT_API_KEY else "Upload Files"
+
+# Store API key in session for the session lifetime
+if "GOOGLE_API_KEY" not in st.session_state:
+    st.session_state["GOOGLE_API_KEY"] = DEFAULT_API_KEY
+
+# Files, indexes, caches
+if "uploaded_files" not in st.session_state:
+    st.session_state.uploaded_files = []
+if "analysis_history" not in st.session_state:
+    st.session_state.analysis_history = []
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "analysis_results" not in st.session_state:
+    st.session_state.analysis_results = {}
+if "combined_faiss_index" not in st.session_state:
+    st.session_state.combined_faiss_index = None
+if "last_api_call_time" not in st.session_state:
+    st.session_state.last_api_call_time = 0.0
+if "api_call_count" not in st.session_state:
+    st.session_state.api_call_count = 0
+
+# Local caches
+CACHE_RESPONSES = {}
+DOCUMENT_SUMMARIES = {}
+
+# Minimum delay between LLM calls (seconds). Adjust as needed.
+MIN_DELAY_SECONDS = 1.5
+
+# ----------------------------
+# Configure genai if key exists
+# ----------------------------
+def configure_genai_from_session():
+    key = st.session_state.get("GOOGLE_API_KEY")
+    if key:
+        try:
+            genai.configure(api_key=key)
+            return True
+        except Exception:
+            # swallow and return False
+            return False
+    return False
+
+if st.session_state.get("GOOGLE_API_KEY"):
+    configure_genai_from_session()
+
+# ----------------------------
+# Load spaCy model (with graceful fallback)
+# ----------------------------
+nlp = None
+try:
+    # Try to load if available
+    nlp = spacy.load("en_core_web_sm")
+except Exception:
+    try:
+        # As fallback try package name (if wheel installed)
+        if is_package("en_core_web_sm"):
+            nlp = spacy.load("en_core_web_sm")
+    except Exception:
+        nlp = None
+
+# ----------------------------
+# Utilities
+# ----------------------------
+def get_image_base64(image_path: str) -> Optional[str]:
     try:
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode()
-    except FileNotFoundError:
-        st.error("Logo file not found. Please ensure the correct path.")
+    except Exception:
         return None
 
 
-# Load logo image
-logo_base64 = get_image_base64("INSIGHT IQ LOGO.png")
-if logo_base64:
-    st.sidebar.markdown(
-        f"""
-        <div style="display: flex; flex-direction: column; align-items: center; margin-top: -40px; margin-bottom: -30px;">
-            <img src="data:image/png;base64,{logo_base64}" alt="Logo" style="width: 200px; height: auto;">
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    st.sidebar.write("Logo not found") # Display a message if the logo isn't found.
-
-# Load API key
-load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
-# Session State Initialization
-if 'uploaded_files' not in st.session_state:
-    st.session_state.uploaded_files = []
-if 'analysis_history' not in st.session_state:
-    st.session_state.analysis_history = []
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-if 'current_file_index' not in st.session_state:
-    st.session_state.current_file_index = 0  # Start with the first file
-if 'analysis_results' not in st.session_state:
-    st.session_state.analysis_results = {}
-if 'combined_faiss_index' not in st.session_state:
-    st.session_state.combined_faiss_index = None  # Store combined FAISS index
-if 'last_api_call_time' not in st.session_state:
-    st.session_state.last_api_call_time = 0
-if 'api_call_count' not in st.session_state:
-    st.session_state.api_call_count = 0
-
-# Load NLP Model for Entity Recognition
-nlp = spacy.load("en_core_web_sm")
-
-def extract_entities(text):
-    """Extracts market-related entities from text using NLP."""
+def extract_entities(text: str) -> dict:
+    """Extract a small set of market-related entities using spaCy (if installed)."""
+    if nlp is None:
+        return {}
     doc = nlp(text)
-
-    def extract_entities(text):
-        """Extracts market-related entities from text using NLP."""
-        doc = nlp(text)
-        return {ent.label_: ent.text for ent in doc.ents if ent.label_ in ["ORG", "MONEY", "PERCENT", "GPE"]}
-
-    return {ent.label_: ent.text for ent in doc.ents if ent.label_ in ["ORG", "MONEY", "PERCENT", "GPE"]}
-
-
-# Extract text from PDFs
-def get_pdf_text(pdf_file):
-    pdf_bytes = pdf_file.read()
-    pdf_reader = PdfReader(io.BytesIO(pdf_bytes))
-    return "".join([page.extract_text() for page in pdf_reader.pages])
+    # Return dict label -> list of strings (deduped)
+    res = {}
+    for ent in doc.ents:
+        if ent.label_ in ["ORG", "MONEY", "PERCENT", "GPE"]:
+            res.setdefault(ent.label_, []).append(ent.text)
+    # reduce lists
+    return {k: list(dict.fromkeys(v)) for k, v in res.items()}
 
 
-# Split text into chunks
-def get_text_chunks(text):
-    return RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000).split_text(text)
+def get_pdf_text(uploaded_file) -> str:
+    """Safely read PDF bytes and extract text from pages; returns a single string."""
+    try:
+        uploaded_file.seek(0)
+        pdf_bytes = uploaded_file.read()
+        pdf_reader = PdfReader(io.BytesIO(pdf_bytes))
+        pages_text = []
+        for p in pdf_reader.pages:
+            try:
+                text = p.extract_text()
+                if text:
+                    pages_text.append(text)
+            except Exception:
+                # ignore problematic page
+                continue
+        return "\n".join(pages_text)
+    except Exception as e:
+        st.error(f"Failed to read PDF: {e}")
+        return ""
 
 
-# Process and save FAISS index
-def process_file(pdf_file):
-    raw_text = get_pdf_text(pdf_file)
-    text_chunks = get_text_chunks(raw_text)
-    file_name = os.path.splitext(pdf_file.name)[0]
-    folder_path = f"faiss_indexes/{file_name}"
-    os.makedirs(folder_path, exist_ok=True)
-
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local(folder_path)
-    st.success(f"Processed: {pdf_file.name}")
-
-    return vector_store # Return the vector store
+def split_text_into_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[str]:
+    if not text:
+        return []
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    return splitter.split_text(text)
 
 
+# Exponential backoff wrapper
+def call_with_backoff(func, *args, max_retries=3, initial_delay=1.0, **kwargs):
+    attempt = 0
+    delay = initial_delay
+    while attempt <= max_retries:
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            attempt += 1
+            if attempt > max_retries:
+                raise
+            time.sleep(delay)
+            delay *= 2
 
-# AI Model for analysis
-def get_analysis_chain(prompt_template):
+
+# Safe detection of Markdown table
+def looks_like_markdown_table(text: str) -> bool:
+    if not text:
+        return False
+    return ("|" in text and ("---" in text or ":--" in text or "--:" in text))
+
+
+# ----------------------------
+# FAISS & Embeddings helpers
+# ----------------------------
+def make_embeddings() -> GoogleGenerativeAIEmbeddings:
+    """
+    Create embeddings configured with the session API key.
+    Google library reads genai configured key; we try to construct embedding object.
+    """
+    if not st.session_state.get("GOOGLE_API_KEY"):
+        raise RuntimeError("Google API key not configured. Please set it in 'API Key Setup'.")
+
+    # Ensure genai configured
+    configure_genai_from_session()
+
+    # Create embeddings object (langchain wrapper). This will rely on configured genai api key.
+    return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+
+
+def safe_faiss_from_texts(texts: List[str]) -> FAISS:
+    """
+    Wrap FAISS.from_texts with retries and chunk size checks.
+    """
+    if not texts:
+        raise ValueError("No texts to embed.")
+
+    # Attempt direct create; if it fails (likely due to size), retry with smaller chunks
+    try:
+        embeddings = make_embeddings()
+        return FAISS.from_texts(texts, embedding=embeddings)
+    except Exception as e:
+        # try splitting texts further and retry
+        small_chunks = []
+        for t in texts:
+            small_chunks.extend(split_text_into_chunks(t, chunk_size=500, chunk_overlap=50))
+        embeddings = make_embeddings()
+        return FAISS.from_texts(small_chunks, embedding=embeddings)
+
+
+# ----------------------------
+# Core processing functions
+# ----------------------------
+def process_file(uploaded_file) -> Optional[FAISS]:
+    """
+    Extract text from uploaded PDF, split into chunks safely and create a FAISS index saved to disk.
+    Returns FAISS vector store or None on error.
+    """
+    try:
+        if not st.session_state.get("GOOGLE_API_KEY"):
+            st.error("Please set your Google API key first on the 'API Key Setup' page.")
+            return None
+
+        raw_text = get_pdf_text(uploaded_file)
+        if not raw_text.strip():
+            st.error(f"No extractable text found in file: {uploaded_file.name}")
+            return None
+
+        # chunk size tuned to stay well within token limits of embeddings
+        text_chunks = split_text_into_chunks(raw_text, chunk_size=1000, chunk_overlap=100)
+
+        # create faiss vector store (with retries inside safe_faiss_from_texts)
+        vector_store = call_with_backoff(safe_faiss_from_texts, text_chunks, max_retries=3, initial_delay=1.0)
+
+        # persist locally (folder per file)
+        file_name = os.path.splitext(uploaded_file.name)[0]
+        folder_path = os.path.join("faiss_indexes", file_name)
+        os.makedirs(folder_path, exist_ok=True)
+        vector_store.save_local(folder_path)
+
+        st.success(f"Processed and saved FAISS index for {uploaded_file.name}")
+        return vector_store
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        st.error(f"Failed to process {uploaded_file.name}: {e}")
+        st.write(f"Debug info:\n```\n{tb}\n```")
+        return None
+
+
+def load_faiss_for_file(file_name: str) -> Optional[FAISS]:
+    folder_path = os.path.join("faiss_indexes", file_name)
+    try:
+        emb = make_embeddings()
+        db = FAISS.load_local(folder_path, emb, allow_dangerous_deserialization=True)
+        return db
+    except Exception as e:
+        st.error(f"Error loading FAISS index for {file_name}: {e}")
+        return None
+
+
+def combine_faiss_indexes(vector_stores: List[FAISS]) -> Optional[FAISS]:
+    if not vector_stores:
+        return None
+    combined = vector_stores[0]
+    for vs in vector_stores[1:]:
+        try:
+            combined.merge_from(vs)
+        except Exception:
+            # if merge fails, ignore to continue
+            continue
+    return combined
+
+
+# ----------------------------
+# LLM Chains & analysis
+# ----------------------------
+def get_analysis_chain(prompt_template: str):
+    """
+    Returns a langchain QA chain using Gemini Chat model.
+    """
+    # model is ChatGoogleGenerativeAI wrapper
     model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.3)
     return load_qa_chain(model, chain_type="stuff", prompt=PromptTemplate(template=prompt_template, input_variables=["context"]))
 
 
-# Document Analysis
-def analyze_document(file_name, query, prompt_template):
-    folder_path = f"faiss_indexes/{file_name}"
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+def analyze_document(file_name: str, query: str, prompt_template: str) -> Optional[str]:
+    """
+    Load FAISS, retrieve relevant docs and run the QA chain.
+    """
+    if not st.session_state.get("GOOGLE_API_KEY"):
+        return "API key not configured."
 
-    try:
-        new_db = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
-    except RuntimeError:
-        st.error(f"Error loading FAISS index for {file_name}.")
-        return
+    db = load_faiss_for_file(file_name)
+    if db is None:
+        return f"FAISS index for {file_name} could not be loaded."
 
-    docs = new_db.similarity_search(query)
+    docs = db.similarity_search(query, k=4)
     chain = get_analysis_chain(prompt_template)
-    response = chain({"input_documents": docs}, return_only_outputs=True)
-
-    return response["output_text"]
-
-
-
-def comparative_analysis(file_name, query, domain):
-    folder_path = f"faiss_indexes/{file_name}"
-
     try:
-        # Load the FAISS index
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        new_db = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
-        docs = new_db.similarity_search(query)
+        # rate limiting between calls
+        ensure_rate_limit()
+        result = chain({"input_documents": docs}, return_only_outputs=True)
+        return result.get("output_text", "")
     except Exception as e:
-        return f"Error loading FAISS index or similarity search failed: {str(e)}"
+        return f"Error during analysis: {e}"
 
-    # Define structured queries for each domain
-    structured_query = ""
-    if domain == "Mutual Funds":  # Removed unnecessary spaces
-        structured_query = f"""
-        Perform a comparative analysis of competitors in the Mutual funds sector based on the uploaded document.  *Extract real data points directly from the document. Do not use hypothetical data.*
 
-        Output the response in a structured tabular format with the following columns: Metric, HDFC Mid-Cap Opportunities Fund (this file), NIFTY Midcap 150 TRI (Primary Benchmark), NIFTY 50 TRI (Secondary Benchmark), Source (Page Number). Using Markdown table format.  Ensure clarity, completeness, and actionable insights in your analyses.  Include the specific data points and their source (page number or section) from the original document. If data is missing from document , mark it as missing in tabular format.
-        Focus specifically on metrics such as:
-        * NAV
-        *	Performance (Returns %)
-        *	5 Year Average forward P/E
-        *	10 Year Average forward P/E
-        *	Expense ratio (Regular plan)
-        *	Return to Risk Ratio(March'14-March'24)
-        * Sector Allocation (Financials, Top holdings).
-        """
+def comparative_analysis(file_name: str, query: str, domain: str) -> str:
+    """
+    Compose a domain-specific structured query and call Gemini directly for comparative analysis.
+    """
+    if not st.session_state.get("GOOGLE_API_KEY"):
+        return "API key not configured."
 
+    # Validate loading FAISS
+    db = load_faiss_for_file(file_name)
+    if db is None:
+        return f"FAISS index for {file_name} could not be loaded."
+
+    # structured prompts per domain
+    if domain == "Mutual Funds":
+        structured_query = (
+            "Perform a comparative analysis of competitors in the Mutual funds sector based on the uploaded document. "
+            "*Extract real data points directly from the document. Do not use hypothetical data.*\n\n"
+            "Output the response in a structured tabular format with the following columns: Metric, This File, Primary Benchmark, Secondary Benchmark, Source (Page Number). "
+            "Ensure clarity, completeness, and actionable insights. Include page numbers or table numbers for each data point. Mark missing data as 'N/A'.\n\n"
+            "Focus on metrics: NAV, Performance (Returns %), 5 Year Avg forward P/E, 10 Year Avg forward P/E, Expense ratio (Regular plan), Return to Risk Ratio (March'14-March'24), Sector Allocation, Top holdings.\n"
+        )
     elif domain == "Life Insurance":
-        structured_query = f"""
-        Perform a comparative analysis of competitors in the Life Insurance sector based on the uploaded document. *Extract real data points directly from the document. Do not use hypothetical data.*
-
-
-        Output the response in a structured tabular format with competitor names as columns and comparison metrics as rows using Markdown table format. Only provide the information available within the document. Ensure clarity, completeness, and actionable insights in your analyses.  Include the specific data points and their source (page number or section) from the original document.  If data is missing from document , mark it as missing in tabular format.
-        """
+        structured_query = (
+            "Perform a comparative analysis of competitors in the Life Insurance sector based on the uploaded document. "
+            "*Extract real data points directly from the document. Do not use hypothetical data.*\n\n"
+            "Output as a Markdown table comparing competitor names as columns and metrics as rows. Mark missing data as 'N/A'."
+        )
     else:
         return "Invalid domain selection."
 
+    # Retrieve context (top docs)
     try:
-        # Prepare the prompt for Gemini 2.0 Flash
-        prompt_template = PromptTemplate.from_template(
-            "You are a business analysis expert specialized in competitive analysis. You are excellent at presenting insights in a structured, tabular format using Markdown tables. Ensure clarity, completeness, and actionable insights in your analyses, using ONLY the data provided in the document. Cite the source of each data point (page number, table number, etc.). If a specific data point is not available in the document, clearly mark it as 'Not Available' or 'N/A'.\n\n{text}"
-        )
-        formatted_prompt = prompt_template.format(text=structured_query)
-
-        # Call Gemini 2.0 Flash through Langchain
-        model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.3)
-        response = model.invoke(formatted_prompt)  # Invoke the model directly
-        return response.content  # Access content attribute to get the string
+        docs = db.similarity_search(query, k=6)
+        context_text = "\n\n".join([d.page_content for d in docs])
     except Exception as e:
-        return f"Error during Gemini analysis: {str(e)}"
+        return f"Error retrieving context from FAISS: {e}"
 
-
-
-cache = {}
-document_summaries = {}
-
-
-def combine_faiss_indexes(vector_stores):
-    """Combines multiple FAISS indexes into one."""
-    if not vector_stores:
-        return None
-
-    combined_index = vector_stores[0]  # Start with the first index
-    for i in range(1, len(vector_stores)):
-        combined_index.merge_from(vector_stores[i])
-
-    return combined_index
-
-
-def summarize_document(text):
-    """Summarizes the given document content and extracts key points (only called once per document)."""
-    if text in cache:  # Check if already summarized
-        return cache[text]
-
-    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
+    # Build prompt
     prompt = (
-        "Summarize the following document while extracting all key points. "
-        "Ensure the summary is concise yet retains important details.\n\n"
-        f"Document:\n{text}\n\nSummary:"
+        "You are a business analysis expert specialized in competitive analysis. Use only the data available in the context below. "
+        "Cite sources with page numbers or section names if present. If not present, write 'Source: Document'.\n\n"
+        f"Context:\n{context_text}\n\n"
+        f"Task:\n{structured_query}\n\n"
+        "Return ONLY a Markdown table (or tables) and short notes if needed."
     )
-    summary = model.invoke(prompt).content
-    cache[text] = summary  # Store summary to avoid redundant API calls
-    return summary
 
-def preprocess_uploaded_documents():
-    """Processes uploaded documents, extracts key points, and stores summaries."""
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_stores = []  # To store individual FAISS indexes
+    try:
+        ensure_rate_limit()
+        model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.2)
+        response = call_with_backoff(lambda p: model.invoke(p), prompt, max_retries=3, initial_delay=1.0)
+        return getattr(response, "content", str(response))
+    except Exception as e:
+        return f"Error during Gemini analysis: {e}"
 
-    for pdf_file in st.session_state.uploaded_files:
-        file_name = os.path.splitext(pdf_file.name)[0]
-        folder_path = f"faiss_indexes/{file_name}"
 
-        if os.path.exists(folder_path):
-            try:
-                vector_store = FAISS.load_local(folder_path, embeddings, allow_dangerous_deserialization=True)
-                vector_stores.append(vector_store)  # Add to the list of vector stores
+def summarize_document(text: str) -> str:
+    if not text:
+        return ""
+    if text in DOCUMENT_SUMMARIES:
+        return DOCUMENT_SUMMARIES[text]
+    try:
+        ensure_rate_limit()
+        model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.3)  # ✅ updated
+        prompt = (
+            "Summarize the following document while extracting the key points, metrics, and bulletable insights. "
+            "Keep it concise and factual. Use only the content provided.\n\n"
+            f"Document:\n{text}\n\nSummary:"
+        )
+        response = call_with_backoff(lambda p: model.invoke(p), prompt, max_retries=3, initial_delay=1.0)
+        summary = getattr(response, "content", str(response))
+        DOCUMENT_SUMMARIES[text] = summary
+        return summary
+    except Exception as e:
+        return f"Error summarizing document: {e}"
 
-                # Retrieve chunks for summarization
-                docs = vector_store.similarity_search("", k=5)  # Reduce k to lower API usage
-                text_content = "\n".join([doc.page_content.strip() for doc in docs])
 
-                # Summarize document (only if not already done)
-                if file_name not in document_summaries:
-                    document_summaries[file_name] = summarize_document(text_content)
+# ----------------------------
+# Rate limiting helper
+# ----------------------------
+def ensure_rate_limit():
+    now = time.time()
+    last = st.session_state.get("last_api_call_time", 0.0)
+    elapsed = now - last
+    if elapsed < MIN_DELAY_SECONDS:
+        time.sleep(MIN_DELAY_SECONDS - elapsed)
+    st.session_state["last_api_call_time"] = time.time()
+    st.session_state["api_call_count"] = st.session_state.get("api_call_count", 0) + 1
 
-            except Exception as e:
-                st.error(f"Error processing {file_name}: {e}")
 
-    # Combine FAISS indexes after processing all files
-    if vector_stores:
-        st.session_state.combined_faiss_index = combine_faiss_indexes(vector_stores)
-
-MIN_DELAY_SECONDS = 1.5  # Increase delay (try 1.5 or 2 seconds)
-
-def chatbot_response(user_input):
-    """Generates a chatbot response based on uploaded documents."""
+# ----------------------------
+# Chatbot functionality
+# ----------------------------
+def chatbot_response(user_input: str) -> str:
     if not st.session_state.get("uploaded_files"):
-        return "No documents uploaded! Please upload a document first."
+        return "No documents uploaded. Please upload documents first."
 
-    # Check if response is already cached
-    if user_input in cache:
-        return cache[user_input]
+    if user_input in CACHE_RESPONSES:
+        return CACHE_RESPONSES[user_input]
 
-    # If a combined FAISS index is available, use it
-    if not st.session_state.combined_faiss_index:
-        st.warning("No combined index found. Please re-upload and process the documents.")
-        return "Please re-upload and process documents to create an index."
+    if not st.session_state.get("combined_faiss_index"):
+        return "No combined index found. Please process files and create the index."
 
     try:
-        docs = st.session_state.combined_faiss_index.similarity_search(user_input, k=3)  # k=3:  Aggressively limit the number of chunks.
-        relevant_chunks = [doc.page_content.strip() for doc in docs]
+        docs = st.session_state.combined_faiss_index.similarity_search(user_input, k=3)
+        relevant_chunks = [d.page_content.strip() for d in docs]
+        summarized_context = "\n\n".join(filter(None, relevant_chunks))
+        if not summarized_context.strip():
+            return "No relevant content found in uploaded documents."
+
+        prompt = (
+            "You are a helpful assistant that must answer ONLY using the provided context. Do not hallucinate.\n\n"
+            f"Context:\n{summarized_context}\n\n"
+            f"User Question: {user_input}\n\n"
+            "Provide a concise answer (max ~100 words). If answer is not in context, reply 'Not available in documents.'"
+        )
+        ensure_rate_limit()
+        model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.2)  # ✅ updated
+        response = call_with_backoff(lambda p: model.invoke(p), prompt, max_retries=3, initial_delay=1.0)
+        text = getattr(response, "content", str(response))
+        CACHE_RESPONSES[user_input] = text
+        return text
     except Exception as e:
-        st.error(f"Error searching combined FAISS index: {e}")
-        return "An error occurred while searching the documents."
-
-    summarized_context = "\n".join(filter(None, relevant_chunks))
-
-    # If no content, avoid an unnecessary API call
-    if not summarized_context:
-        return "I couldn't find an exact answer in the documents."
-
-    prompt_template = (
-        "You are an AI assistant that answers questions strictly based on the provided document context. "
-        "Use only the given context to generate a well-explained answer. Do NOT generate information outside the document.\n\n"
-        "Context:\n{context}\n\nUser Question: {user_input}\n\n"
-        "Provide a detailed and easy-to-understand response in simple terms. Answer should not exceed 50 words."  # Limit response length.
-    )
-    prompt = prompt_template.format(context=summarized_context, user_input=user_input)
-
-    # Rate Limiting
-    current_time = time.time()
-
-    # Initialize last_api_call_time if it's the first call
-    if st.session_state.last_api_call_time == 0:
-        st.session_state.last_api_call_time = current_time  # Initialize on first call
-
-    time_since_last_call = current_time - st.session_state.last_api_call_time
-    if time_since_last_call < MIN_DELAY_SECONDS:
-        sleep_time = MIN_DELAY_SECONDS - time_since_last_call
-        time.sleep(sleep_time) # Pause execution
-
-    # Debugging: Print information before API call
-    print(f"API Call Count: {st.session_state.api_call_count}")
-    print(f"Time since last API call: {time_since_last_call:.2f} seconds")
-
-    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-    try:
-        st.session_state.api_call_count += 1  # Increment API call count
-        response = model.invoke(prompt).content
-
-        st.session_state.last_api_call_time = time.time()  # Update last call time
-
-    except Exception as e:
-        st.error(f"Error generating response: {e}")
-        return "An error occurred while generating the response.  Please try again in a moment."
-
-    # Cache response to prevent redundant API calls
-    cache[user_input] = response
-
-    return response
+        return f"Error generating chatbot response: {e}"
 
 
-
-# Function to generate Storytelling Insights
-def generate_storytelling_insights(analysis_result, analysis_type, selected_domain, file_name):
-    """Generates compelling storytelling insights based on the analysis."""
-    # Example Storytelling Prompts (customize based on domain and analysis type)
-
+# ----------------------------
+# Storytelling helper
+# ----------------------------
+def generate_storytelling_insights(analysis_result: str, analysis_type: str, selected_domain: str, file_name: str) -> str:
+    # keep prompt small to avoid tokens explosion
+    short_context = analysis_result if len(analysis_result) < 4000 else analysis_result[:4000]
     if selected_domain == "Mutual Funds":
         if analysis_type == "Competitor Strategy":
-            storytelling_prompt = f"""Summarize this competitor strategy analysis in 3-5 sentences, highlighting key findings and implications for investment decisions. Focus on actionable items and strategies to inform potential investors about {file_name}. """
+            storytelling_prompt = f"Summarize competitor strategy analysis in 3-5 sentences focusing on actionable investor insights for {file_name}."
         elif analysis_type == "Market Trends":
-            storytelling_prompt = f"""In 3-5 sentences, describe the major market trends revealed in the analysis, and what these trends might mean for the future of fund performance and investor strategies related to {file_name}."""
+            storytelling_prompt = f"In 3-5 sentences, describe major market trends from the analysis for {file_name}."
         elif analysis_type == "SWOT Analysis":
-            storytelling_prompt = f"""Explain the major strengths, weaknesses, opportunities, and threats to fund using SWOT analysis. Summarize the SWOT analysis in 3-5 sentences, and how these factors influence potential investment strategies for fund {file_name}."""
-        elif analysis_type == "Comparative Analysis":
-            storytelling_prompt = f"""Highlight the key insights from the comparative analysis, focusing on the fund's strengths and weaknesses relative to its competitors. Explain in 3-5 sentences"""
+            storytelling_prompt = f"Provide a 3-5 sentence SWOT summary based on the analysis for {file_name}."
         else:
-            storytelling_prompt = "Summarize key insights."
+            storytelling_prompt = "Provide a concise 3-5 sentence summary of the analysis."
     elif selected_domain == "Life Insurance":
-        if analysis_type == "Competitor Strategy":
-            storytelling_prompt = f"""Summarize competitor's product offerings, customer acquisition and retention strategies, new product development, etc in 3-5 sentences. Focus on key points to showcase the company's current position."""
-        elif analysis_type == "Market Trends":
-            storytelling_prompt = f"""Summarize major trends that has been observed or predicted that have and/or will effect company's position. Use 3-5 sentences."""
-        elif analysis_type == "SWOT Analysis":
-            storytelling_prompt = f"""Explain the major strengths, weaknesses, opportunities, and threats to company. Summarize the SWOT analysis in 3-5 sentences, and how these factors influence potential investment strategies for {file_name}."""
-        elif analysis_type == "Comparative Analysis":
-            storytelling_prompt = f"""Summarize the strength and/or weekness of the company vs other similar or close competitor. Use 3-5 sentences."""
-        else:
-            storytelling_prompt = "Summarize key insights."
-
+        storytelling_prompt = f"Provide a concise 3-5 sentence summary of the analysis for {file_name}."
     else:
-        storytelling_prompt = "Provide a concise summary." #Generic Summary
+        storytelling_prompt = "Provide a concise summary."
 
-    # Generate Storytelling Insights using Gemini
-    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.3)
-    storytelling_response = model.invoke(storytelling_prompt + "\n" + analysis_result)
-    return storytelling_response.content
+    prompt = storytelling_prompt + "\n\nContext:\n" + short_context
+    try:
+        ensure_rate_limit()
+        model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-001", temperature=0.25)
+        response = call_with_backoff(lambda p: model.invoke(p), prompt, max_retries=2, initial_delay=1.0)
+        return getattr(response, "content", str(response))
+    except Exception as e:
+        return f"Error generating storytelling insights: {e}"
 
 
-# Sidebar Navigation
-st.sidebar.header("------------Navigation Bar-------------")
-if "page" not in st.session_state:
-    st.session_state.page = "Upload Files"
+# ----------------------------
+# UI: Sidebar & Navigation
+# ----------------------------
 
 st.markdown(
     """
@@ -375,100 +481,115 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-pages = {
-    "Dashboard": "📊",
+# ✅ Show logo first (top of sidebar)
+logo_b64 = get_image_base64("INSIGHT IQ LOGO.png")
+if logo_b64:
+    st.sidebar.markdown(
+        f"""
+        <div style="display:flex;align-items:center;justify-content:center;margin-bottom:10px;">
+            <img src="data:image/png;base64,{logo_b64}" width="180"/>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+# ✅ Navigation title centered below logo
+st.sidebar.markdown(
+    "<h3 style='text-align:center; margin-bottom:15px;'>------------ Navigation Bar ------------</h3>",
+    unsafe_allow_html=True
+)
+
+# ✅ Navigation buttons
+PAGES = {
+    "API Key Setup": "🔑",
     "Upload Files": "📂",
     "Analysis": "📈",
     "Files": "📁",
     "Chatbot": "🤖",
-    "Summary View": "📑" # Change to "Summary View"
+    "Summary View": "📑",
+    "Dashboard": "📊"
 }
 
-for page, icon in pages.items():
-    if st.sidebar.button(f"{icon} {page}"):
-        st.session_state.page = page
+for page_name, icon in PAGES.items():
+    if st.sidebar.button(f"{icon} {page_name}"):
+        st.session_state.page = page_name
 
-# Domain prompts dictionary
-domain_prompts = {
-    "Mutual Funds": {
-        "Competitor Strategy": """Analyze competitor strategies within the Mutual Funds sector. Extract insights and structure the output.  Focus on investment strategies, fund performance, expense ratios, and marketing tactics.
+# ----------------------------
+# Pages
+# ----------------------------
+if st.session_state.page == "API Key Setup":
+    st.title("🔑 API Key Setup")
+    st.write("Enter your Google Generative AI API key for this session. This will be stored only for the session (in Streamlit state).")
+    api_key = st.text_input("Google API Key", value=st.session_state.get("GOOGLE_API_KEY", "") or "", type="password")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("Save Key (session)"):
+            if api_key and api_key.strip():
+                st.session_state["GOOGLE_API_KEY"] = api_key.strip()
+                ok = configure_genai_from_session()
+                if ok:
+                    st.success("API key saved to session and configured.")
+                else:
+                    st.error("Failed to configure genai with that key. Please verify.")
+            else:
+                st.error("Please enter a valid API key.")
+    with col2:
+        if st.button("Save to .env (optional)"):
+            if api_key and api_key.strip():
+                # append or replace .env entry
+                env_path = ".env"
+                try:
+                    # read existing .env
+                    lines = []
+                    if os.path.exists(env_path):
+                        with open(env_path, "r", encoding="utf-8") as f:
+                            lines = f.readlines()
+                    found = False
+                    for i, ln in enumerate(lines):
+                        if ln.startswith("GOOGLE_API_KEY="):
+                            lines[i] = f'GOOGLE_API_KEY="{api_key.strip()}"\n'
+                            found = True
+                            break
+                    if not found:
+                        lines.append(f'GOOGLE_API_KEY="{api_key.strip()}"\n')
+                    with open(env_path, "w", encoding="utf-8") as f:
+                        f.writelines(lines)
+                    st.success("Saved API key to .env. (You may need to restart the app for .env to be read on next cold start.)")
+                    st.session_state["GOOGLE_API_KEY"] = api_key.strip()
+                    configure_genai_from_session()
+                except Exception as e:
+                    st.error(f"Failed to save .env: {e}")
+            else:
+                st.error("Please enter a valid API key.")
 
-Response Format:
-•⁠  ⁠Present each section as bullet points.
-•⁠  ⁠Include quantitative metrics such as AUM (Assets Under Management), expense ratios, and fund returns.
-•⁠  ⁠Provide comparative insights between different fund houses and their strategies.
-•⁠  ⁠Highlight trends using tables or charts for clarity (e.g., market share trends, fund performance comparison charts).""",
+    st.markdown("---")
+    st.write("Current session API key set:" , "Yes" if st.session_state.get("GOOGLE_API_KEY") else "No")
+    if st.session_state.get("GOOGLE_API_KEY"):
+        if st.button("Clear session API key"):
+            st.session_state["GOOGLE_API_KEY"] = None
+            st.success("Cleared API key from session.")
 
-        "Market Trends": """Identify key market trends in the Mutual Funds sector.  Focus on asset allocation trends, investor preferences, and regulatory changes.
 
-Response Format:
-•⁠  ⁠Present insights in concise bullet points.
-•⁠  ⁠Include relevant data visualizations for trend comparison, such as asset allocation shifts over time and growth in specific fund categories.""",
-
-        "SWOT Analysis": """Perform a SWOT analysis of key mutual fund competitors.  Analyze their strengths, weaknesses, opportunities, and threats in the current market environment.
-
-Response Format:
-•⁠  ⁠Structure the SWOT analysis in a tabular format.
-•⁠  ⁠Provide comparative insights on key competitors, highlighting their competitive advantages and vulnerabilities.""",
-
-        "Comparative Analysis": """{selected_domain} comparative analysis request received. Present the output in a Markdown table, comparing key metrics such as fund performance, expense ratios, and AUM across different fund houses.  ONLY use data points found in the document."""
-    },
-
-    "Life Insurance": {
-        "Competitor Strategy": """Analyze competitor strategies within the Life Insurance sector. Extract insights and structure the output.  Focus on product offerings, pricing strategies, and distribution channels.
-
-Response Format:
-•⁠  ⁠Present insights using bullet points.
-•⁠  ⁠Include quantitative metrics such as premium growth rates and claim settlement ratios if available.
-•⁠  ⁠Highlight trends using charts or tables, such as market share trends and customer acquisition costs.""",
-
-        "Market Trends": """Analyze key market trends in the Life Insurance industry.  Focus on changing consumer needs, regulatory developments, and technological advancements.
-
-Response Format:
-•⁠  ⁠Use data visualizations where possible.
-•⁠  ⁠Compare industry growth rates and market penetration, highlighting key drivers of change.""",
-
-        "SWOT Analysis": """Perform a SWOT analysis of life insurance competitors:
-
-Response Format:
-•⁠  ⁠Present SWOT analysis in a structured table.
-•⁠  ⁠Provide insights into emerging competitive threats, such as new entrants or disruptive technologies.""",
-
-        "Comparative Analysis": """{selected_domain} comparative analysis request received. Present the output in a Markdown table, comparing key metrics such as premium rates, policy features, and claim settlement ratios across different insurance providers. ONLY use data points found in the document."""
-    }
-}
-
-# Page Handling
-if "page" not in st.session_state:
-    st.session_state.page = "Upload Files"
-
-if st.session_state.page == "Upload Files":
+elif st.session_state.page == "Upload Files":
     st.title("Upload Competitor Reports")
     st.write("### Step 1: Select the Document Domain")
-
     domain_mapping = {
         "Mutual Funds": "Investment strategies, fund performance, expense ratios, and marketing tactics.",
         "Life Insurance": "Risk management, policy innovations, customer engagement strategies."
     }
 
-    # Initialize session state for selected_domain if not set
     if "selected_domain" not in st.session_state:
         st.session_state.selected_domain = "Select a domain"
 
-    # Dropdown for selecting domain
     selected_domain = st.selectbox(
         "Select Document Domain",
         ["Select a domain"] + list(domain_mapping.keys()),
-        index=list(domain_mapping.keys()).index(st.session_state.selected_domain)
-        if st.session_state.selected_domain in domain_mapping else 0
+        index=list(domain_mapping.keys()).index(st.session_state.selected_domain) if st.session_state.selected_domain in domain_mapping else 0
     )
-
-    # Save the selected domain
     if selected_domain != "Select a domain":
         st.session_state.selected_domain = selected_domain
 
     st.write("### Step 2: Upload PDF Reports")
-
     if selected_domain == "Select a domain":
         st.warning("Please select a domain before uploading PDFs.")
         file_uploader_disabled = True
@@ -476,192 +597,183 @@ if st.session_state.page == "Upload Files":
         st.success(f"You selected *{selected_domain}*. Expected PDF content: {domain_mapping[selected_domain]}")
         file_uploader_disabled = False
 
-    uploaded_files = st.file_uploader(
-        "Select PDFs",
-        type=["pdf"],
-        accept_multiple_files=True,
-        disabled=file_uploader_disabled
-    )
-
+    uploaded_files = st.file_uploader("Select PDFs", type=["pdf"], accept_multiple_files=True, disabled=file_uploader_disabled)
     if uploaded_files:
         st.session_state.uploaded_files = uploaded_files
         st.success(f"{len(uploaded_files)} file(s) uploaded successfully for {selected_domain} analysis.")
 
-    if st.button("Submit & Process") and uploaded_files:
-        st.write("Processing files...")
-        st.session_state.analysis_results = {}  # Reset analysis results
-        st.session_state.current_file_index = 0 #Revert File index back to zero when new files are uploaded
-        vector_stores = []  # Collect individual vector stores
-        for pdf_file in uploaded_files:
-            vector_store = process_file(pdf_file)  # Process each file and get its vector store
-            if vector_store:
-                vector_stores.append(vector_store)
-
-        # Combine the vector stores into a single FAISS index
-        if vector_stores:
-            st.session_state.combined_faiss_index = combine_faiss_indexes(vector_stores)
-            st.success("All files processed and combined into a single index.")
+    if st.button("Submit & Process") and st.session_state.uploaded_files:
+        # require API key
+        if not st.session_state.get("GOOGLE_API_KEY"):
+            st.error("Please set your Google API key first on the 'API Key Setup' page.")
         else:
-            st.warning("No files were successfully processed to create the index.")
+            st.write("Processing files...")
+            st.session_state.analysis_results = {}
+            st.session_state.current_file_index = 0
+            vector_stores = []
+            for pdf_file in st.session_state.uploaded_files:
+                with st.spinner(f"Processing {pdf_file.name}..."):
+                    vs = process_file(pdf_file)
+                    if vs:
+                        vector_stores.append(vs)
+            if vector_stores:
+                st.session_state.combined_faiss_index = combine_faiss_indexes(vector_stores)
+                st.success("All files processed and combined into a single index.")
+            else:
+                st.warning("No files were successfully processed to create the index.")
 
-
-    # Button to switch to Analysis Page
     if st.button("Proceed to Analysis"):
         st.session_state.page = "Analysis"
-        st.rerun()  # Refresh the page
+        st.rerun()
+
+
 
 elif st.session_state.page == "Analysis":
     st.title("Run AI-Driven Analysis")
-
-    # Ensure a domain is selected
     if "selected_domain" not in st.session_state or st.session_state.selected_domain == "Select a domain":
         st.error("No domain selected. Please go back and upload files with a domain.")
         if st.button("Go Back to Upload Page"):
             st.session_state.page = "Upload Files"
-            st.rerun()
-    else:
-        selected_domain = st.session_state.selected_domain
-
-    # Ensure files are uploaded
-    if not st.session_state.get("uploaded_files"):
+            st.experimental_rerun()
+    elif not st.session_state.get("uploaded_files"):
         st.warning("No files uploaded! Please upload relevant financial and market analysis documents.")
         if st.button("Go Back to Upload Page"):
             st.session_state.page = "Upload Files"
             st.rerun()
-    else:
-        # Domain & Analysis Selection
-        selected_domain = st.session_state.selected_domain
 
-        # Use the actual dictionary keys for selectbox options
-        analysis_options = list(domain_prompts[selected_domain].keys())  #Get the keys
+    else:
+        selected_domain = st.session_state.selected_domain
+        # domain prompts (kept succinct)
+        domain_prompts = {
+            "Mutual Funds": {
+                "Competitor Strategy": "Analyze competitor strategies within the Mutual Funds sector. Use data from the document only.",
+                "Market Trends": "Identify key market trends in Mutual Funds. Use data from the document only.",
+                "SWOT Analysis": "Perform a SWOT analysis using only the document data.",
+                "Comparative Analysis": "{selected_domain} comparative analysis request received. Present the output in a Markdown table, comparing key metrics. ONLY use data points found in the document."
+            },
+            "Life Insurance": {
+                "Competitor Strategy": "Analyze competitor strategies within the Life Insurance sector. Use data from the document only.",
+                "Market Trends": "Identify key market trends in Life Insurance. Use data from the document only.",
+                "SWOT Analysis": "Perform a SWOT analysis using only the document data.",
+                "Comparative Analysis": "{selected_domain} comparative analysis request received. Present the output in a Markdown table, comparing key metrics. ONLY use data points found in the document."
+            }
+        }
+        analysis_options = list(domain_prompts[selected_domain].keys())
         analysis_type = st.selectbox("Select analysis type", analysis_options)
 
         if st.button("Run Analysis"):
-            st.session_state.analysis_results = {} #Reset the list
-            st.session_state.page = "Summary View" # Switch to Summary View
-
-            for i, pdf_file in enumerate(st.session_state.uploaded_files):
-                # Analyze Each File
+            st.session_state.analysis_results = {}
+            st.session_state.page = "Summary View"
+            for pdf_file in st.session_state.uploaded_files:
                 file_name = os.path.splitext(pdf_file.name)[0]
-                folder_path = f"faiss_indexes/{file_name}"
-
+                folder_path = os.path.join("faiss_indexes", file_name)
                 if not os.path.exists(folder_path):
                     st.error(f"FAISS index for {file_name} not found. Process the document first.")
                     continue
-
                 query = domain_prompts[selected_domain][analysis_type].format(selected_domain=selected_domain)
-
                 with st.spinner(f"Analyzing {pdf_file.name}..."):
                     try:
                         if analysis_type == "Comparative Analysis":
-                            # Pass the selected_domain to the function
                             report = comparative_analysis(file_name=file_name, query=query, domain=selected_domain)
-                            # Store results
                             storytelling_insights = generate_storytelling_insights(report, analysis_type, selected_domain, file_name)
-                            # Store analysis history in session state
-                            st.session_state.setdefault("analysis_history", []).append({
-                                "query": query,
-                                "domain": selected_domain,
-                                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "result": report,
-                                "storytelling_insights": storytelling_insights  # Store storytelling insights
-                            })
-                            # Store values
-                            st.session_state.analysis_results[pdf_file.name] = {"report": report, "storytelling_insights": storytelling_insights}
-
                         else:
                             report = analyze_document(file_name, query, f"Context: {{context}}")
                             storytelling_insights = generate_storytelling_insights(report, analysis_type, selected_domain, file_name)
-                             # Store analysis history in session state
-                            st.session_state.setdefault("analysis_history", []).append({
-                                "query": query,
-                                "domain": selected_domain,
-                                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "result": report,
-                                "storytelling_insights": storytelling_insights  # Store storytelling insights
-                            })
-                            # Store values
-                            st.session_state.analysis_results[pdf_file.name] = {"report": report, "storytelling_insights": storytelling_insights}
-
+                        st.session_state.setdefault("analysis_history", []).append({
+                            "query": query,
+                            "domain": selected_domain,
+                            "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "result": report,
+                            "storytelling_insights": storytelling_insights
+                        })
+                        st.session_state.analysis_results[pdf_file.name] = {"report": report, "storytelling_insights": storytelling_insights}
                     except Exception as e:
-                        st.error(f"Analysis failed for {pdf_file.name}: {str(e)}")
+                        st.error(f"Analysis failed for {pdf_file.name}: {e}")
             st.rerun()
 
 
-    # Button to go back
     if st.button("Back to Upload Page"):
         st.session_state.page = "Upload Files"
         st.rerun()
+
 
 
 elif st.session_state.page == "Dashboard":
     st.title("Dashboard 📊")
     st.metric("📊 Total Analyses", len(st.session_state.analysis_history))
     st.subheader("📜 Analysis History")
-
     if st.session_state.analysis_history:
         for analysis in st.session_state.analysis_history:
             st.markdown(f"*Query:* {analysis['query']}")
             st.markdown(f"*Timestamp:* {analysis['timestamp']}")
-            st.markdown(f"*Result:* {analysis['result']}")
-            if 'storytelling_insights' in analysis:
-                st.markdown(f"*Summary:* {analysis['storytelling_insights']}")
+            st.markdown("**Result:**")
+            if looks_like_markdown_table(analysis["result"]):
+                st.markdown(analysis["result"], unsafe_allow_html=True)
+            else:
+                st.text_area("", value=str(analysis["result"]), height=120)
+            if analysis.get("storytelling_insights"):
+                st.markdown("**Summary:**")
+                st.markdown(analysis["storytelling_insights"])
             st.markdown("---")
     else:
         st.info("No analysis history available.")
 
+
 elif st.session_state.page == "Files":
     st.title("Uploaded Files")
-    for file in st.session_state.uploaded_files:
-        st.write(f"📄 {file.name}")
+    if st.session_state.uploaded_files:
+        for file in st.session_state.uploaded_files:
+            st.write(f"📄 {file.name}")
+    else:
+        st.info("No uploaded files yet.")
+
 
 elif st.session_state.page == "Chatbot":
     st.title("Intel360 Chatbot 🤖")
-    st.markdown("Ask about competitor analysis, insights, and AI-generated reports!")
-
+    st.markdown("Ask about competitor analysis, insights, and AI-generated reports (answers will be based on uploaded documents).")
     user_input = st.text_input("Ask me anything about competitor analysis:")
-
     if user_input:
-        response = chatbot_response(user_input)
-        st.session_state.chat_history.append({"query": user_input, "response": response})
-        st.markdown("### 🤖 Chatbot Response")
-        st.markdown(f"{response}")  # Displaying response in markdown for better formatting
-
-    # Display chat history
+        with st.spinner("Contacting model..."):
+            resp = chatbot_response(user_input)
+            st.session_state.chat_history.append({"query": user_input, "response": resp})
+            st.markdown("### 🤖 Chatbot Response")
+            if looks_like_markdown_table(resp):
+                st.markdown(resp, unsafe_allow_html=True)
+            else:
+                st.write(resp)
     st.subheader("🗂️ Chat History")
     for chat in st.session_state.chat_history:
         st.write(f"Q: {chat['query']}")
         st.markdown(f"A: {chat['response']}")
         st.markdown("---")
 
+
 elif st.session_state.page == "Summary View":
     st.title("Summary View 📑")
-
     if not st.session_state.analysis_results:
         st.info("No analysis has been performed yet. Please run an analysis first.")
         if st.button("Back to Analysis Page"):
             st.session_state.page = "Analysis"
             st.rerun()
+
     else:
-        # File Selection Dropdown
         file_names = list(st.session_state.analysis_results.keys())
         selected_file_name = st.selectbox("Select File to View Summary", file_names)
-
-        # Display Summary and Results
         report = st.session_state.analysis_results[selected_file_name]["report"]
         storytelling_insights = st.session_state.analysis_results[selected_file_name]["storytelling_insights"]
-
         st.subheader("✨ Summary")
-        st.markdown(storytelling_insights)
-
-        st.subheader("Raw Analysis Result")
-
-        # Adjust display based on whether it is comparative analysis or normal analysis result
-        if "table" in report.lower():
-            st.markdown(report, unsafe_allow_html=True)  # Use st.markdown for tables
+        if storytelling_insights:
+            st.markdown(storytelling_insights)
         else:
-            st.text_area(f"Analysis Report for {selected_file_name}", value=report, height=300)
-
+            st.write("No storytelling summary available.")
+        st.subheader("Raw Analysis Result")
+        if isinstance(report, str) and looks_like_markdown_table(report):
+            st.markdown(report, unsafe_allow_html=True)
+        else:
+            st.text_area(f"Analysis Report for {selected_file_name}", value=str(report), height=300)
         if st.button("Back to Analysis Page"):
             st.session_state.page = "Analysis"
             st.rerun()
+
+
+# end of app
