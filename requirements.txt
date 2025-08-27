@@ -1,11 +1,15 @@
 streamlit
+PyPDF2
+langchain
+langchain-community
+langchain-google-genai
 google-generativeai
 python-dotenv
-langchain
-PyPDF2
-chromadb
 faiss-cpu
-langchain_google_genai
+chromadb
+pandas
+spacy
 matplotlib
 seaborn
-langchain-community
+# SpaCy English model (needed for nlp = spacy.load("en_core_web_sm"))
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
